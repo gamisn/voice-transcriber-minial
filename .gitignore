@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Whisper model cache (large files downloaded on first use)
+~/.cache/whisper/
+
+# Voice transcriber runtime cache (icons, socket, pid)
+.cache/
+
+# WAV recordings
+*.wav
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# uv lockfile (commit if you want reproducible installs, remove this line)
+# uv.lock

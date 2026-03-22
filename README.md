@@ -18,33 +18,32 @@ Record your voice and transcribe it locally using [OpenAI Whisper](https://githu
 
 The Linux installer handles everything automatically:
 
-- Installs system packages (PortAudio, ffmpeg, notify-send) via `apt`
+- Installs system packages (PortAudio, ffmpeg, notify-send, AppIndicator3) via `apt`
 - Creates a Python venv and installs Whisper + dependencies
 - Adds `voice-transcriber`, `voice-transcriber-tray`, and `voice-transcriber-toggle` to your PATH
 - Registers a **Super+Shift+R** keyboard shortcut to toggle recording from any app
-- Sets the floating status window to auto-start on login
+- Sets the panel icon daemon to auto-start on login
 
 ## Usage
 
-### Floating window mode (recommended)
+### Panel icon mode (recommended)
 
-Start the status window once — then use the keyboard shortcut from anywhere:
+Start the daemon once — a microphone icon appears in your COSMIC / GNOME panel:
 
 ```bash
 voice-transcriber-tray
 ```
 
-A small pill appears in the corner of your screen.
+Then use the keyboard shortcut from any app:
 
-1. Press **Super+Shift+R** from any app
-2. Pill turns **red** — recording
-3. Press **Super+Shift+R** again to stop
-4. Pill turns **amber** — transcribing
-5. Notification pops up with the text
-6. Text is in your clipboard — **Ctrl+V** to paste
-7. Pill returns to **grey** — ready again
+1. Press **Super+Shift+R** — icon turns **red** (recording)
+2. Press **Super+Shift+R** again to stop
+3. Icon turns **amber** — transcribing in the background
+4. A desktop notification pops up with the transcribed text
+5. Text is already in your clipboard — **Ctrl+V** to paste
+6. Icon returns to **grey** — ready for next recording
 
-You can also click the pill to toggle recording.
+You can also click the panel icon to toggle recording, or right-click for a menu with a Quit option.
 
 ### CLI mode
 
@@ -57,7 +56,7 @@ voice-transcriber
 # Use a larger model for better accuracy
 voice-transcriber -m medium
 
-# Copy result to clipboard
+# Copy result to clipboard automatically
 voice-transcriber --clipboard
 
 # Save audio alongside transcription
@@ -79,7 +78,7 @@ voice-transcriber > note.txt
 
 > `base` is a great default. Step up to `small` or `medium` for higher accuracy.
 
-### Change the model for the floating window
+### Change the model for the panel daemon
 
 ```bash
 voice-transcriber-tray -m small
@@ -98,7 +97,7 @@ make install-gpu
 | Command | What it does |
 |---------|-------------|
 | `voice-transcriber` | CLI mode — record, transcribe, print to stdout |
-| `voice-transcriber-tray` | Start the floating status window |
+| `voice-transcriber-tray` | Start the panel icon daemon |
 | `voice-transcriber-toggle` | Toggle recording in the running daemon |
 | `make tray` | Same as `voice-transcriber-tray` (from project dir) |
 | `make toggle` | Same as `voice-transcriber-toggle` (from project dir) |
@@ -126,12 +125,21 @@ Check it was registered: Settings → Keyboard → Custom Shortcuts. The command
 voice-transcriber-toggle
 ```
 
-**Floating window not appearing on login**
+**Panel icon not appearing on login**
 Check `~/.config/autostart/voice-transcriber.desktop` exists. You can also start it manually with `voice-transcriber-tray`.
+
+**Panel icon not visible (no AppIndicator support)**
+Install the GIR package manually and restart the daemon:
+
+```bash
+sudo apt install gir1.2-ayatanaappindicator3-0.1
+pkill -f tray.py
+voice-transcriber-tray
+```
 
 ## macOS
 
-On macOS the floating window is not available (no GTK). The CLI mode works identically, and the result is auto-copied to your clipboard via `pbcopy`.
+On macOS only the CLI mode is available (no GTK/AppIndicator). The result is automatically copied to your clipboard via `pbcopy`.
 
 ### Install (macOS)
 
@@ -167,7 +175,7 @@ Use **macOS Shortcuts** (or Alfred/Raycast) to create an action that runs:
 /Users/YOUR_USER/.local/bin/voice-transcriber --clipboard
 ```
 
-in a terminal window. That gives you a one-key workflow similar to the Linux tray mode.
+in a terminal window. That gives you a one-key workflow similar to the Linux panel mode.
 
 ## Uninstall
 

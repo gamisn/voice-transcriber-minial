@@ -29,10 +29,11 @@ fail()  { echo -e "${RED}[x]${NC} $*"; exit 1; }
 info "Checking system dependencies..."
 
 missing_pkgs=()
-dpkg -s libportaudio2 &>/dev/null     || missing_pkgs+=(libportaudio2)
-dpkg -s portaudio19-dev &>/dev/null   || missing_pkgs+=(portaudio19-dev)
-dpkg -s ffmpeg &>/dev/null            || missing_pkgs+=(ffmpeg)
-dpkg -s libnotify-bin &>/dev/null     || missing_pkgs+=(libnotify-bin)
+dpkg -s libportaudio2 &>/dev/null                  || missing_pkgs+=(libportaudio2)
+dpkg -s portaudio19-dev &>/dev/null                || missing_pkgs+=(portaudio19-dev)
+dpkg -s ffmpeg &>/dev/null                         || missing_pkgs+=(ffmpeg)
+dpkg -s libnotify-bin &>/dev/null                  || missing_pkgs+=(libnotify-bin)
+dpkg -s gir1.2-ayatanaappindicator3-0.1 &>/dev/null || missing_pkgs+=(gir1.2-ayatanaappindicator3-0.1)
 
 if [ ${#missing_pkgs[@]} -gt 0 ]; then
     info "Installing system packages: ${missing_pkgs[*]}"

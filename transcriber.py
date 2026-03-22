@@ -237,6 +237,7 @@ def transcribe(
     model_name: str,
     language: str,
     model_cache: Optional[dict] = None,
+    quiet: bool = False,
 ) -> str:
     """Load Whisper model and transcribe the in-memory audio.
 
@@ -245,31 +246,46 @@ def transcribe(
             When provided, the model is loaded once and reused on subsequent
             calls with the same model_name, making the 2nd+ transcription
             significantly faster.
+        quiet: When True, skip all Spinner output and stderr writes. Use this
+            when calling from a GUI daemon where stderr writes cause GIL
+            contention that blocks the UI event loop.
     """
     whisper = _import_whisper()
 
     if model_cache is not None and model_name in model_cache:
         model = model_cache[model_name]
-        sys.stderr.write(f"✓ Model '{model_name}' (cached)\n")
+        if not quiet:
+            sys.stderr.write(f"✓ Model '{model_name}' (cached)\n")
     else:
-        spinner = Spinner(f"Loading Whisper model '{model_name}'")
-        spinner.start()
-        model = whisper.load_model(model_name)
-        spinner.stop(f"✓ Model '{model_name}' loaded")
+        if quiet:
+            model = whisper.load_model(model_name)
+        else:
+            spinner = Spinner(f"Loading Whisper model '{model_name}'")
+            spinner.start()
+            model = whisper.load_model(model_name)
+            spinner.stop(f"✓ Model '{model_name}' loaded")
         if model_cache is not None:
             model_cache[model_name] = model
 
     audio_f32 = audio.astype(np.float32) / 32768.0
 
-    spinner = Spinner("Transcribing audio")
-    spinner.start()
-    result = model.transcribe(
-        audio_f32,
-        language=language,
-        fp16=False,  # safe default; GPU users can flip to True
-        task="transcribe",
-    )
-    spinner.stop("✓ Transcription complete")
+    if quiet:
+        result = model.transcribe(
+            audio_f32,
+            language=language,
+            fp16=False,
+            task="transcribe",
+        )
+    else:
+        spinner = Spinner("Transcribing audio")
+        spinner.start()
+        result = model.transcribe(
+            audio_f32,
+            language=language,
+            fp16=False,
+            task="transcribe",
+        )
+        spinner.stop("✓ Transcription complete")
 
     return result["text"].strip()
 
@@ -343,8 +359,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def copy_to_clipboard(text: str) -> bool:
-    """Try to copy text to the system clipboard (Linux/macOS)."""
+    """Try to copy text to the system clipboard (Linux/macOS).
+
+    Uses Popen with DEVNULL to avoid blocking on wl-copy's forked background
+    child process (which would keep a captured pipe open indefinitely).
+    """
     import subprocess
+    data = text.encode()
     for cmd in (
         ["wl-copy"],
         ["xclip", "-selection", "clipboard"],
@@ -352,9 +373,23 @@ def copy_to_clipboard(text: str) -> bool:
         ["pbcopy"],  # macOS
     ):
         try:
-            subprocess.run(cmd, input=text.encode(), check=True, capture_output=True)
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            proc.stdin.write(data)
+            proc.stdin.close()
+            proc.wait(timeout=2)
             return True
-        except (FileNotFoundError, subprocess.CalledProcessError):
+        except FileNotFoundError:
+            continue
+        except (subprocess.TimeoutExpired, OSError):
+            try:
+                proc.kill()
+            except OSError:
+                pass
             continue
     return False
 

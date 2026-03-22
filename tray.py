@@ -1,21 +1,19 @@
 #!/usr/bin/python3
 """
-voice-transcriber tray daemon — shows a small floating status window and lets
-you toggle recording via a global keyboard shortcut or by clicking the window.
+voice-transcriber tray daemon — puts a microphone icon in the COSMIC / GNOME
+panel and lets you toggle recording via a keyboard shortcut or clicking
+the icon.
 
 Usage:
-    python tray.py            # start the daemon (floating status window)
-    python tray.py toggle     # toggle recording (bind this to a hotkey)
-    python tray.py status     # print current state and exit
+    tray.py            # start the daemon (icon in panel)
+    tray.py toggle     # toggle recording (bind this to a hotkey)
+    tray.py status     # print current state and exit
 
-GNOME / Pop!_OS keyboard shortcut setup:
-    Settings -> Keyboard -> Customize Shortcuts -> Custom Shortcuts -> Add Shortcut
+Keyboard shortcut setup (COSMIC / Pop!_OS):
+    Settings -> Keyboard -> Shortcuts -> Custom Shortcuts -> Add
     Name:    Voice Transcriber Toggle
     Command: voice-transcriber-toggle
     Shortcut: Super+Shift+R  (or any combo you prefer)
-
-The window stays in the corner of your screen. Click it to toggle recording,
-or use the keyboard shortcut from any application.
 """
 
 from __future__ import annotations
@@ -35,6 +33,7 @@ from typing import Callable, Optional
 # ---------------------------------------------------------------------------
 
 _CACHE_DIR = pathlib.Path.home() / ".cache" / "voice-transcriber"
+_ICON_DIR = _CACHE_DIR / "icons"
 _SOCK_PATH = _CACHE_DIR / "tray.sock"
 _PID_PATH = _CACHE_DIR / "tray.pid"
 
@@ -49,15 +48,53 @@ class State(Enum):
     TRANSCRIBING = auto()
 
 
-# State display config: (base_label, background colour, text colour)
+# State display: (menu_label, icon_filename_stem)
 _STATE_UI = {
-    State.IDLE:         ("  Mic: ready  ", "#2d2d2d", "#aaaaaa"),
-    State.RECORDING:    ("  Rec ", "#8b0000", "#ff6b6b"),
-    State.TRANSCRIBING: ("  Transcribing...  ", "#5a4000", "#ffd060"),
+    State.IDLE:         ("Mic: ready — click to record", "vt-idle"),
+    State.RECORDING:    ("Recording...",                 "vt-recording"),
+    State.TRANSCRIBING: ("Transcribing...",              "vt-transcribing"),
 }
 
-# Number of bars in the level meter shown during recording
 _METER_WIDTH = 12
+
+# ---------------------------------------------------------------------------
+# SVG icons — generated once at startup into ~/.cache/voice-transcriber/icons/
+# ---------------------------------------------------------------------------
+
+_ICONS_SVG = {
+    "vt-idle": """<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
+  <circle cx="11" cy="11" r="10" fill="#555555"/>
+  <rect x="8" y="3" width="6" height="10" rx="3" fill="#cccccc"/>
+  <path d="M5 11 Q5 16 11 16 Q17 16 17 11" stroke="#cccccc" stroke-width="1.5" fill="none"/>
+  <line x1="11" y1="16" x2="11" y2="19" stroke="#cccccc" stroke-width="1.5"/>
+  <line x1="8" y1="19" x2="14" y2="19" stroke="#cccccc" stroke-width="1.5"/>
+</svg>""",
+
+    "vt-recording": """<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
+  <circle cx="11" cy="11" r="10" fill="#8b0000"/>
+  <circle cx="11" cy="11" r="5" fill="#ff4444"/>
+</svg>""",
+
+    "vt-transcribing": """<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
+  <circle cx="11" cy="11" r="10" fill="#5a4000"/>
+  <text x="11" y="15" text-anchor="middle" font-size="10" fill="#ffd060" font-family="monospace">...</text>
+</svg>""",
+}
+
+
+def _write_icons() -> None:
+    """Write SVG icon files to the cache directory."""
+    _ICON_DIR.mkdir(parents=True, exist_ok=True)
+    for stem, svg in _ICONS_SVG.items():
+        path = _ICON_DIR / f"{stem}.svg"
+        if not path.exists():
+            path.write_text(svg)
+    # end _write_icons
+
+
+def _icon_path(stem: str) -> str:
+    return str(_ICON_DIR / f"{stem}.svg")
+
 
 # ---------------------------------------------------------------------------
 # Desktop notifications
@@ -68,8 +105,8 @@ def _notify(title: str, body: str) -> None:
     """Send a desktop notification via notify-send (best-effort)."""
     try:
         subprocess.run(
-            ["notify-send", "--app-name=voice-transcriber", "--expire-time=8000",
-             title, body],
+            ["notify-send", "--app-name=voice-transcriber",
+             "--expire-time=8000", title, body],
             check=False,
             capture_output=True,
         )
@@ -84,7 +121,15 @@ def _notify(title: str, body: str) -> None:
 
 
 def _copy_to_clipboard(text: str) -> bool:
-    """Copy text to the system clipboard; returns True on success."""
+    """Copy text to the system clipboard; returns True on success.
+
+    wl-copy forks a background child to serve paste requests, so we must
+    NOT use capture_output=True -- that keeps the pipe open until the child
+    exits (i.e. until the next clipboard write), which would block the worker
+    thread indefinitely and leave the tray stuck on 'Transcribing...'.
+    We use Popen with DEVNULL for output and wait only for the parent to exit.
+    """
+    data = text.encode()
     for cmd in (
         ["wl-copy"],
         ["xclip", "-selection", "clipboard"],
@@ -92,9 +137,23 @@ def _copy_to_clipboard(text: str) -> bool:
         ["pbcopy"],  # macOS
     ):
         try:
-            subprocess.run(cmd, input=text.encode(), check=True, capture_output=True)
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            proc.stdin.write(data)
+            proc.stdin.close()
+            proc.wait(timeout=2)
             return True
-        except (FileNotFoundError, subprocess.CalledProcessError):
+        except FileNotFoundError:
+            continue
+        except (subprocess.TimeoutExpired, OSError):
+            try:
+                proc.kill()
+            except OSError:
+                pass
             continue
     return False
     # end _copy_to_clipboard
@@ -125,128 +184,89 @@ def _send_command(command: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# GTK floating status window
+# Panel indicator (Ayatana AppIndicator3 → COSMIC / GNOME status area)
 # ---------------------------------------------------------------------------
 
 
-class StatusWindow:
-    """A small always-on-top floating pill that shows the current state."""
+class PanelIndicator:
+    """System tray indicator that lives in the COSMIC/GNOME panel."""
 
     def __init__(self, on_toggle_callback: Callable) -> None:
         import gi
         gi.require_version("Gtk", "3.0")
-        from gi.repository import Gtk, Gdk, GLib
+        gi.require_version("AyatanaAppIndicator3", "0.1")
+        from gi.repository import Gtk, GLib, AyatanaAppIndicator3
 
         self._Gtk = Gtk
-        self._Gdk = Gdk
         self._GLib = GLib
         self._on_toggle = on_toggle_callback
 
-        # Shared state — written from any thread, read by the GTK timer.
+        # Shared state — written by worker threads, read by the GTK timer.
         self._desired_state = State.IDLE
-        self._rendered_state = None  # force first paint
-        self._level_text: Optional[str] = None  # live level bar during recording
+        self._rendered_state: Optional[State] = None
+        self._level_text: Optional[str] = None
 
-        self._win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
-        self._win.set_title("voice-transcriber")
-        self._win.set_decorated(False)
-        self._win.set_keep_above(True)
-        self._win.set_skip_taskbar_hint(True)
-        self._win.set_skip_pager_hint(True)
-        self._win.stick()  # show on all workspaces
+        _write_icons()
 
-        display = Gdk.Display.get_default()
-        monitor = display.get_primary_monitor() or display.get_monitor(0)
-        geometry = monitor.get_geometry()
-        self._screen_w = geometry.width
-        self._screen_h = geometry.height
-
-        self._css_provider = Gtk.CssProvider()
-        Gtk.StyleContext.add_provider_for_screen(
-            Gdk.Screen.get_default(),
-            self._css_provider,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        self._indicator = AyatanaAppIndicator3.Indicator.new(
+            "voice-transcriber",
+            _icon_path("vt-idle"),
+            AyatanaAppIndicator3.IndicatorCategory.APPLICATION_STATUS,
         )
-        self._apply_css("#2d2d2d", "#aaaaaa")
+        self._indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.ACTIVE)
+        self._indicator.set_icon_theme_path(str(_ICON_DIR))
 
-        self._label = Gtk.Label(label="  Mic: ready  ")
-        self._win.add(self._label)
+        self._menu = Gtk.Menu()
+        self._toggle_item = Gtk.MenuItem(label="Mic: ready — click to record")
+        self._toggle_item.connect("activate", lambda _: threading.Thread(
+            target=self._on_toggle, daemon=True).start())
+        self._menu.append(self._toggle_item)
 
-        self._win.set_events(Gdk.EventMask.BUTTON_PRESS_MASK)
-        self._win.connect("button-press-event", self._on_click)
-        self._win.connect("destroy", Gtk.main_quit)
+        self._menu.append(Gtk.SeparatorMenuItem())
 
-        self._win.show_all()
-        self._reposition()
+        quit_item = Gtk.MenuItem(label="Quit")
+        quit_item.connect("activate", self._on_quit)
+        self._menu.append(quit_item)
 
-        # Single fast timer drives ALL UI updates from the GTK main thread.
-        # Worker threads never call GLib.idle_add — they just set attributes.
+        self._menu.show_all()
+        self._indicator.set_menu(self._menu)
+
+        # Single timer drives all UI updates from the GTK main thread.
         GLib.timeout_add(150, self._poll_and_render)
 
-    def _apply_css(self, bg_color: str, fg_color: str) -> None:
-        self._css_provider.load_from_data(f"""
-            window {{
-                background-color: {bg_color};
-                border-radius: 8px;
-            }}
-            label {{
-                color: {fg_color};
-                font-family: monospace;
-                font-size: 13px;
-                padding: 6px 14px;
-            }}
-        """.encode())
-
-    def _reposition(self) -> None:
-        self._win.resize(1, 1)
-        self._win.queue_resize()
-        self._GLib.idle_add(self._do_reposition)
-
-    def _do_reposition(self) -> bool:
-        w, h = self._win.get_size()
-        margin = 16
-        x = self._screen_w - w - margin
-        y = self._screen_h - h - margin - 48
-        self._win.move(x, y)
-        return False
-
-    def _on_click(self, widget, event) -> None:
-        threading.Thread(target=self._on_toggle, daemon=True).start()
+    def _on_quit(self, *_) -> None:
+        self._Gtk.main_quit()
 
     def _poll_and_render(self) -> bool:
         """Called every 150ms on the GTK main thread. Reads shared state
-        written by worker threads and applies it to the UI — no cross-thread
-        GTK calls needed."""
+        written by worker threads and updates the indicator."""
         state = self._desired_state
-        label_text, bg_color, fg_color = _STATE_UI[state]
 
-        # Always repaint colours when state changed
         if state != self._rendered_state:
-            self._apply_css(bg_color, fg_color)
-            self._label.set_text(label_text)
+            label, icon_stem = _STATE_UI[state]
+            self._indicator.set_icon_full(_icon_path(icon_stem), label)
+            self._toggle_item.set_label(label)
             self._rendered_state = state
 
-        # During recording, override the label with the live level bar
+        # During recording, show the live level bar in the menu item label.
         if state == State.RECORDING:
             level_text = self._level_text
             if level_text is not None:
-                self._label.set_text(level_text)
+                self._toggle_item.set_label(level_text)
 
         return True  # keep repeating
 
-    # -- Public API called from worker threads (thread-safe) -----------------
+    # -- Public API (thread-safe: only sets plain Python attributes) ----------
 
     def set_state(self, state: State) -> None:
-        """Set the desired state. The GTK timer picks it up within 150ms."""
         self._desired_state = state
-        self._level_text = None  # reset level bar on any state change
+        self._level_text = None
 
     def set_level(self, normalized: float) -> None:
-        """Set the live level bar text. Only meaningful during RECORDING."""
         filled = min(int(normalized * _METER_WIDTH), _METER_WIDTH)
         bar = "|" * filled + "." * (_METER_WIDTH - filled)
-        self._level_text = f"  Rec [{bar}]  "
-    # end StatusWindow
+        self._level_text = f"Rec [{bar}]"
+    # end PanelIndicator
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +275,7 @@ class StatusWindow:
 
 
 class TrayDaemon:
-    """Background daemon that owns the recording lifecycle and status window."""
+    """Background daemon that owns the recording lifecycle and panel indicator."""
 
     def __init__(self) -> None:
         self._model = "base"
@@ -265,18 +285,18 @@ class TrayDaemon:
         self._stop_recording_event: Optional[threading.Event] = None
         self._work_thread: Optional[threading.Thread] = None
         self._server_thread: Optional[threading.Thread] = None
-        self._window: Optional[StatusWindow] = None
+        self._indicator: Optional[PanelIndicator] = None
         self._running = False
         self._sd = None  # cached sounddevice module
-        self._whisper_model_cache: dict = {}  # {"model_name": loaded_model}
+        self._whisper_model_cache: dict = {}
 
     # -- State management ----------------------------------------------------
 
     def _set_state(self, state: State) -> None:
         with self._state_lock:
             self._state = state
-        if self._window is not None:
-            self._window.set_state(state)
+        if self._indicator is not None:
+            self._indicator.set_state(state)
 
     def _get_state(self) -> State:
         with self._state_lock:
@@ -290,7 +310,7 @@ class TrayDaemon:
             self._start_recording()
         elif state == State.RECORDING:
             self._stop_recording()
-        # TRANSCRIBING: ignore second press
+        # TRANSCRIBING: ignore
 
     def _start_recording(self) -> None:
         if self._get_state() != State.IDLE:
@@ -311,13 +331,7 @@ class TrayDaemon:
             self._stop_recording_event.set()
 
     def _recording_worker(self, stop_event: threading.Event) -> None:
-        """Background thread: record -> transcribe -> clipboard -> back to idle."""
-        # Silence stderr for this thread — the spinner and level-meter in
-        # transcriber.py write to sys.stderr, which can block when the
-        # daemon is launched from a terminal whose buffer fills up.
-        import io
-        old_stderr = sys.stderr
-        sys.stderr = io.StringIO()
+        """Background thread: record -> transcribe -> clipboard -> notify."""
         try:
             self._ensure_venv_imports()
             from transcriber import _import_sounddevice, transcribe, record_audio
@@ -326,8 +340,8 @@ class TrayDaemon:
                 self._sd = _import_sounddevice()
 
             def _on_level(normalized: float) -> None:
-                if self._window is not None and self._get_state() == State.RECORDING:
-                    self._window.set_level(normalized)
+                if self._indicator is not None and self._get_state() == State.RECORDING:
+                    self._indicator.set_level(normalized)
 
             audio = record_audio(
                 self._sd,
@@ -338,36 +352,49 @@ class TrayDaemon:
 
             if audio is None:
                 self._set_state(State.IDLE)
-                threading.Thread(target=_notify, args=("Voice Transcriber", "No audio captured."), daemon=True).start()
+                threading.Thread(
+                    target=_notify,
+                    args=("Voice Transcriber", "No audio captured."),
+                    daemon=True,
+                ).start()
                 return
 
             self._set_state(State.TRANSCRIBING)
+
+            # quiet=True: no Spinner, no stderr writes, no GIL contention.
             text = transcribe(
                 audio,
                 model_name=self._model,
                 language=self._language,
                 model_cache=self._whisper_model_cache,
+                quiet=True,
             )
 
+            # Copy to clipboard and go idle BEFORE sending the notification,
+            # so the notification never blocks the state transition.
             if text:
                 _copy_to_clipboard(text)
             self._set_state(State.IDLE)
 
-            if text:
-                threading.Thread(target=_notify, args=("Voice Transcriber", text), daemon=True).start()
-            else:
-                threading.Thread(target=_notify, args=("Voice Transcriber", "Transcription was empty."), daemon=True).start()
+            msg = text if text else "Transcription was empty."
+            threading.Thread(
+                target=_notify,
+                args=("Voice Transcriber", msg),
+                daemon=True,
+            ).start()
 
         except Exception as exc:  # noqa: BLE001
             self._set_state(State.IDLE)
-            threading.Thread(target=_notify, args=("Voice Transcriber - Error", str(exc)), daemon=True).start()
-        finally:
-            sys.stderr = old_stderr
+            threading.Thread(
+                target=_notify,
+                args=("Voice Transcriber - Error", str(exc)),
+                daemon=True,
+            ).start()
         # end _recording_worker
 
     def _ensure_venv_imports(self) -> None:
-        """Add the venv's site-packages to sys.path once so sounddevice/
-        numpy/whisper are importable under system python3."""
+        """Inject the venv's site-packages so sounddevice/numpy/whisper are
+        importable when tray.py runs under system python3."""
         if getattr(self, "_venv_injected", False):
             return
         _here = pathlib.Path(__file__).parent
@@ -432,7 +459,7 @@ class TrayDaemon:
             conn.close()
         # end _handle_client
 
-    # -- SIGUSR1 as an alternative toggle signal -----------------------------
+    # -- SIGUSR1 signal handler ----------------------------------------------
 
     def _setup_signal_handler(self) -> None:
         def _handler(signum, frame):
@@ -446,7 +473,7 @@ class TrayDaemon:
     # -- Lifecycle -----------------------------------------------------------
 
     def run(self, model: str = "base", language: str = "en") -> None:
-        """Start the daemon. Blocks until the window is closed."""
+        """Start the daemon. Blocks until the user quits."""
         import gi
         gi.require_version("Gtk", "3.0")
         from gi.repository import Gtk
@@ -461,7 +488,7 @@ class TrayDaemon:
         self._setup_signal_handler()
         self._start_socket_server()
 
-        self._window = StatusWindow(on_toggle_callback=self.toggle)
+        self._indicator = PanelIndicator(on_toggle_callback=self.toggle)
 
         try:
             Gtk.main()
@@ -473,12 +500,11 @@ class TrayDaemon:
 
 
 # ---------------------------------------------------------------------------
-# CLI subcommands: toggle / status
+# CLI subcommands
 # ---------------------------------------------------------------------------
 
 
 def cmd_toggle() -> None:
-    """Send toggle to the running daemon."""
     response = _send_command("toggle")
     if response is None:
         print("ERROR: voice-transcriber daemon is not running.", file=sys.stderr)
@@ -488,7 +514,6 @@ def cmd_toggle() -> None:
 
 
 def cmd_status() -> None:
-    """Print the current daemon state."""
     response = _send_command("status")
     print("not running" if response is None else response)
     # end cmd_status
@@ -504,14 +529,13 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(
         prog="voice-transcriber-tray",
-        description="Voice transcriber floating status window.",
+        description="Voice transcriber panel indicator.",
     )
     parser.add_argument(
         "command",
         nargs="?",
         choices=["toggle", "status"],
-        help="toggle: flip recording state in the running daemon; "
-             "status: print daemon state; "
+        help="toggle: flip recording state; status: print state; "
              "(omit to start the daemon)",
     )
     parser.add_argument(
