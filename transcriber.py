@@ -136,18 +136,34 @@ class Spinner:
 # Recording
 # ---------------------------------------------------------------------------
 
-def record_audio(sd) -> Optional[np.ndarray]:
-    """Record audio from the default microphone until the user stops."""
+def record_audio(
+    sd,
+    stop_event: Optional[threading.Event] = None,
+    interactive: bool = True,
+) -> Optional[np.ndarray]:
+    """Record audio from the default microphone until the user stops.
 
+    Args:
+        sd: The sounddevice module.
+        stop_event: An external Event that, when set, stops recording.
+            If None and interactive is True, a new event is created and
+            controlled by keyboard input.
+        interactive: When True, prints prompts and listens for keystrokes
+            to stop recording. Set to False when stop_event is managed
+            externally (e.g. from the tray daemon).
+    """
     chunks: list[np.ndarray] = []
-    stop_event = threading.Event()
+
+    if stop_event is None:
+        stop_event = threading.Event()
 
     def _callback(indata, frames, time_info, status):
         if status:
             sys.stderr.write(f"\n⚠ audio warning: {status}\n")
         chunks.append(indata.copy())
 
-    sys.stderr.write("\n🎙  Recording… (press ENTER, SPACE, or 'q' to stop)\n\n")
+    if interactive:
+        sys.stderr.write("\n🎙  Recording… (press ENTER, SPACE, or 'q' to stop)\n\n")
 
     stream = sd.InputStream(
         samplerate=SAMPLE_RATE,
@@ -177,13 +193,18 @@ def record_audio(sd) -> Optional[np.ndarray]:
     try:
         with stream:
             meter_thread.start()
-            _wait_for_stop_key(stop_event)
+            if interactive:
+                _wait_for_stop_key(stop_event)
+            else:
+                # Block until the external stop_event is set
+                stop_event.wait()
     except KeyboardInterrupt:
         sys.stderr.write("\n\n✗ Recording cancelled.\n")
         return None
     finally:
         meter_stop.set()
-        sys.stderr.write("\r\033[K")  # clear meter line
+        if interactive:
+            sys.stderr.write("\r\033[K")  # clear meter line
 
     if not chunks:
         sys.stderr.write("⚠ No audio captured.\n")
@@ -193,6 +214,7 @@ def record_audio(sd) -> Optional[np.ndarray]:
     duration = len(audio) / SAMPLE_RATE
     sys.stderr.write(f"✓ Captured {duration:.1f}s of audio\n\n")
     return audio
+    # end record_audio
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +340,7 @@ def main() -> None:
         sd.default.device = (args.device, None)
 
     # Record
-    audio = record_audio(sd)
+    audio = record_audio(sd, interactive=True)
     if audio is None:
         sys.exit(1)
 

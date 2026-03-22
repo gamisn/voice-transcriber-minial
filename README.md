@@ -1,106 +1,62 @@
 # voice-transcriber
 
-A minimal CLI tool that records your voice from the microphone and transcribes it locally using [OpenAI Whisper](https://github.com/openai/whisper). No cloud APIs, no data leaves your machine.
+Record your voice and transcribe it locally using [OpenAI Whisper](https://github.com/openai/whisper). No cloud APIs, no data leaves your machine.
 
-## Features
-
-- **One-key recording** — press Enter, Space, or `q` to stop
-- **Live level meter** — visual feedback while recording
-- **100% offline** — Whisper runs locally, nothing is sent anywhere
-- **Multiple model sizes** — from `tiny` (fast) to `large` (accurate)
-- **Clipboard support** — pipe the result straight to your clipboard
-- **Optional WAV export** — save the raw audio if needed
-
-## Prerequisites
-
-| Dependency   | Why                        | Install                                            |
-| ------------ | -------------------------- | -------------------------------------------------- |
-| Python ≥3.10 | Runtime                    | Usually pre-installed                              |
-| PortAudio    | Audio I/O backend          | See below                                          |
-| ffmpeg       | Whisper audio processing   | `sudo dnf install ffmpeg` / `sudo apt install ffmpeg` |
-
-### Install PortAudio
+## Quick Start
 
 ```bash
-# Fedora / Nobara
-sudo dnf install portaudio-devel
-
-# Ubuntu / Pop!_OS
-sudo apt install libportaudio2 portaudio19-dev
-
-# Arch
-sudo pacman -S portaudio
+./install.sh
 ```
 
-## Installation
+That's it. The installer handles everything:
 
-### With uv (recommended)
-
-```bash
-# Create a venv and install deps in one shot
-uv venv .venv && source .venv/bin/activate
-uv pip install openai-whisper sounddevice numpy
-```
-
-### With pip
-
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install openai-whisper sounddevice numpy
-```
-
-### With Makefile
-
-```bash
-make install       # CPU
-make install-gpu   # NVIDIA GPU (CUDA)
-```
-
-> **GPU users:** If you have an NVIDIA GPU, install the CUDA variant of PyTorch for significantly faster transcription. The `install-gpu` target handles this.
+- Installs system packages (PortAudio, ffmpeg, notify-send) via `apt`
+- Creates a Python venv and installs Whisper + dependencies
+- Adds `voice-transcriber`, `voice-transcriber-tray`, and `voice-transcriber-toggle` to your PATH
+- Registers a **Super+Shift+R** keyboard shortcut to toggle recording from any app
+- Sets the floating status window to auto-start on login
 
 ## Usage
 
+### Floating window mode (recommended)
+
+Start the status window once — then use the keyboard shortcut from anywhere:
+
 ```bash
-# Basic — record and transcribe
-python transcriber.py
-
-# Use a larger model for better accuracy
-python transcriber.py -m medium
-
-# Copy result to clipboard
-python transcriber.py --clipboard
-
-# Save audio alongside transcription
-python transcriber.py --save recording.wav
-
-# List audio devices
-python transcriber.py --list-devices
-
-# Use a specific input device
-python transcriber.py -d 3
+voice-transcriber-tray
 ```
 
-### Workflow
+A small pill appears in the corner of your screen.
 
-1. Run the command — recording starts immediately
-2. Speak into your microphone (watch the live level meter)
-3. Press **Enter**, **Space**, or **q** to stop
-4. Whisper loads and transcribes the audio
-5. The transcription is printed to stdout
+1. Press **Super+Shift+R** from any app
+2. Pill turns **red** — recording
+3. Press **Super+Shift+R** again to stop
+4. Pill turns **amber** — transcribing
+5. Notification pops up with the text
+6. Text is in your clipboard — **Ctrl+V** to paste
+7. Pill returns to **grey** — ready again
 
-### Piping
+You can also click the pill to toggle recording.
 
-The transcription goes to **stdout** while all UI/progress goes to **stderr**, so you can pipe cleanly:
+### CLI mode
+
+For terminal usage or scripting:
 
 ```bash
-# Save to file
-python transcriber.py > note.txt
+# Record and transcribe (prints to stdout)
+voice-transcriber
 
-# Pipe to another command
-python transcriber.py | xargs -I{} echo "You said: {}"
+# Use a larger model for better accuracy
+voice-transcriber -m medium
 
-# Append to a log
-python transcriber.py >> journal.txt
+# Copy result to clipboard
+voice-transcriber --clipboard
+
+# Save audio alongside transcription
+voice-transcriber --save recording.wav
+
+# Pipe to a file
+voice-transcriber > note.txt
 ```
 
 ## Model Sizes
@@ -113,23 +69,64 @@ python transcriber.py >> journal.txt
 | `medium` | 769M       | Excellent        | Slow   | ~5 GB  |
 | `large`  | 1550M      | Best             | Slow   | ~10 GB |
 
-> For English-only use, `base` is a great default. Step up to `small` or `medium` if you need higher accuracy.
+> `base` is a great default. Step up to `small` or `medium` for higher accuracy.
+
+### Change the model for the floating window
+
+```bash
+voice-transcriber-tray -m small
+```
+
+## GPU Acceleration
+
+For significantly faster transcription on NVIDIA GPUs:
+
+```bash
+make install-gpu
+```
+
+## Commands Reference
+
+| Command | What it does |
+|---------|-------------|
+| `voice-transcriber` | CLI mode — record, transcribe, print to stdout |
+| `voice-transcriber-tray` | Start the floating status window |
+| `voice-transcriber-toggle` | Toggle recording in the running daemon |
+| `make tray` | Same as `voice-transcriber-tray` (from project dir) |
+| `make toggle` | Same as `voice-transcriber-toggle` (from project dir) |
 
 ## Troubleshooting
 
 **"PortAudio not found"**
-Install the PortAudio development package for your distro (see Prerequisites).
+Re-run `./install.sh` — it installs the required system packages.
 
 **No audio captured / level meter stays flat**
-Check that your microphone is the default input device, or specify it explicitly with `-d`.
+Check that your microphone is the default input device, or specify it explicitly:
 
 ```bash
-python transcriber.py --list-devices   # find your mic's index
-python transcriber.py -d <index>
+voice-transcriber --list-devices
+voice-transcriber -d <index>
 ```
 
 **Slow transcription on CPU**
-Use a smaller model (`-m tiny` or `-m base`) or install the CUDA version of PyTorch for GPU acceleration.
+Use a smaller model (`-m tiny` or `-m base`) or install GPU support with `make install-gpu`.
+
+**Keyboard shortcut not working**
+Check it was registered: Settings → Keyboard → Custom Shortcuts. The command should be:
+
+```
+voice-transcriber-toggle
+```
+
+**Floating window not appearing on login**
+Check `~/.config/autostart/voice-transcriber.desktop` exists. You can also start it manually with `voice-transcriber-tray`.
+
+## Uninstall
+
+```bash
+rm ~/.local/bin/voice-transcriber ~/.local/bin/voice-transcriber-tray ~/.local/bin/voice-transcriber-toggle
+rm ~/.config/autostart/voice-transcriber.desktop
+```
 
 ## License
 

@@ -10,8 +10,4 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# For faster Whisper inference on NVIDIA GPUs
 gpu = ["torch[cuda]"]
-
-[project.scripts]
-voice-transcriber = "transcriber:main"
