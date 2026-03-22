@@ -11,7 +11,7 @@ Usage:
 GNOME / Pop!_OS keyboard shortcut setup:
     Settings -> Keyboard -> Customize Shortcuts -> Custom Shortcuts -> Add Shortcut
     Name:    Voice Transcriber Toggle
-    Command: /home/YOUR_USER/Downloads/voice-transcriber/.venv/bin/python /home/YOUR_USER/Downloads/voice-transcriber/tray.py toggle
+    Command: voice-transcriber-toggle
     Shortcut: Super+Shift+R  (or any combo you prefer)
 
 The window stays in the corner of your screen. Click it to toggle recording,
@@ -28,7 +28,7 @@ import subprocess
 import sys
 import threading
 from enum import Enum, auto
-from typing import Optional
+from typing import Callable, Optional
 
 # ---------------------------------------------------------------------------
 # Runtime paths
@@ -49,12 +49,15 @@ class State(Enum):
     TRANSCRIBING = auto()
 
 
-# State display config: (label, background colour, text colour)
+# State display config: (base_label, background colour, text colour)
 _STATE_UI = {
     State.IDLE:         ("  Mic: ready  ", "#2d2d2d", "#aaaaaa"),
-    State.RECORDING:    ("  Recording...  ", "#8b0000", "#ff6b6b"),
+    State.RECORDING:    ("  Rec ", "#8b0000", "#ff6b6b"),
     State.TRANSCRIBING: ("  Transcribing...  ", "#5a4000", "#ffd060"),
 }
+
+# Number of bars in the level meter shown during recording
+_METER_WIDTH = 12
 
 # ---------------------------------------------------------------------------
 # Desktop notifications
@@ -83,9 +86,10 @@ def _notify(title: str, body: str) -> None:
 def _copy_to_clipboard(text: str) -> bool:
     """Copy text to the system clipboard; returns True on success."""
     for cmd in (
+        ["wl-copy"],
         ["xclip", "-selection", "clipboard"],
         ["xsel", "--clipboard", "--input"],
-        ["wl-copy"],
+        ["pbcopy"],  # macOS
     ):
         try:
             subprocess.run(cmd, input=text.encode(), check=True, capture_output=True)
@@ -128,14 +132,20 @@ def _send_command(command: str) -> Optional[str]:
 class StatusWindow:
     """A small always-on-top floating pill that shows the current state."""
 
-    def __init__(self, on_toggle_callback) -> None:
+    def __init__(self, on_toggle_callback: Callable) -> None:
         import gi
         gi.require_version("Gtk", "3.0")
-        from gi.repository import Gtk, Gdk
+        from gi.repository import Gtk, Gdk, GLib
 
         self._Gtk = Gtk
         self._Gdk = Gdk
+        self._GLib = GLib
         self._on_toggle = on_toggle_callback
+
+        # Shared state — written from any thread, read by the GTK timer.
+        self._desired_state = State.IDLE
+        self._rendered_state = None  # force first paint
+        self._level_text: Optional[str] = None  # live level bar during recording
 
         self._win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
         self._win.set_title("voice-transcriber")
@@ -145,36 +155,23 @@ class StatusWindow:
         self._win.set_skip_pager_hint(True)
         self._win.stick()  # show on all workspaces
 
-        # Position: bottom-right corner with small margin
-        screen = Gdk.Screen.get_default()
         display = Gdk.Display.get_default()
         monitor = display.get_primary_monitor() or display.get_monitor(0)
         geometry = monitor.get_geometry()
         self._screen_w = geometry.width
         self._screen_h = geometry.height
 
-        # Make window transparent / rounded via CSS
-        css = Gtk.CssProvider()
-        css.load_from_data(b"""
-            window {
-                background-color: #2d2d2d;
-                border-radius: 8px;
-            }
-            label {
-                color: #aaaaaa;
-                font-family: monospace;
-                font-size: 13px;
-                padding: 6px 14px;
-            }
-        """)
+        self._css_provider = Gtk.CssProvider()
         Gtk.StyleContext.add_provider_for_screen(
-            screen, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+            Gdk.Screen.get_default(),
+            self._css_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
         )
+        self._apply_css("#2d2d2d", "#aaaaaa")
 
         self._label = Gtk.Label(label="  Mic: ready  ")
         self._win.add(self._label)
 
-        # Click anywhere on the window to toggle
         self._win.set_events(Gdk.EventMask.BUTTON_PRESS_MASK)
         self._win.connect("button-press-event", self._on_click)
         self._win.connect("destroy", Gtk.main_quit)
@@ -182,32 +179,12 @@ class StatusWindow:
         self._win.show_all()
         self._reposition()
 
-    def _reposition(self) -> None:
-        self._win.resize(1, 1)  # let GTK shrink-wrap
-        self._win.queue_resize()
-        # Move after window is realized so we know its size
-        self._Gdk.threads_add_idle(0, self._do_reposition)
+        # Single fast timer drives ALL UI updates from the GTK main thread.
+        # Worker threads never call GLib.idle_add — they just set attributes.
+        GLib.timeout_add(150, self._poll_and_render)
 
-    def _do_reposition(self) -> bool:
-        w, h = self._win.get_size()
-        margin = 16
-        x = self._screen_w - w - margin
-        y = self._screen_h - h - margin - 48  # 48 = approx taskbar height
-        self._win.move(x, y)
-        return False  # don't repeat
-
-    def _on_click(self, widget, event) -> None:
-        threading.Thread(target=self._on_toggle, daemon=True).start()
-
-    def set_state(self, state: State) -> None:
-        """Update the label and background from the GTK main thread."""
-        label_text, bg_color, fg_color = _STATE_UI[state]
-        self._Gdk.threads_add_idle(0, self._apply_state, label_text, bg_color, fg_color)
-
-    def _apply_state(self, label_text: str, bg_color: str, fg_color: str) -> bool:
-        screen = self._Gdk.Screen.get_default()
-        css = self._Gtk.CssProvider()
-        css.load_from_data(f"""
+    def _apply_css(self, bg_color: str, fg_color: str) -> None:
+        self._css_provider.load_from_data(f"""
             window {{
                 background-color: {bg_color};
                 border-radius: 8px;
@@ -219,11 +196,56 @@ class StatusWindow:
                 padding: 6px 14px;
             }}
         """.encode())
-        self._Gtk.StyleContext.add_provider_for_screen(
-            screen, css, self._Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-        )
-        self._label.set_text(label_text)
-        return False  # don't repeat
+
+    def _reposition(self) -> None:
+        self._win.resize(1, 1)
+        self._win.queue_resize()
+        self._GLib.idle_add(self._do_reposition)
+
+    def _do_reposition(self) -> bool:
+        w, h = self._win.get_size()
+        margin = 16
+        x = self._screen_w - w - margin
+        y = self._screen_h - h - margin - 48
+        self._win.move(x, y)
+        return False
+
+    def _on_click(self, widget, event) -> None:
+        threading.Thread(target=self._on_toggle, daemon=True).start()
+
+    def _poll_and_render(self) -> bool:
+        """Called every 150ms on the GTK main thread. Reads shared state
+        written by worker threads and applies it to the UI — no cross-thread
+        GTK calls needed."""
+        state = self._desired_state
+        label_text, bg_color, fg_color = _STATE_UI[state]
+
+        # Always repaint colours when state changed
+        if state != self._rendered_state:
+            self._apply_css(bg_color, fg_color)
+            self._label.set_text(label_text)
+            self._rendered_state = state
+
+        # During recording, override the label with the live level bar
+        if state == State.RECORDING:
+            level_text = self._level_text
+            if level_text is not None:
+                self._label.set_text(level_text)
+
+        return True  # keep repeating
+
+    # -- Public API called from worker threads (thread-safe) -----------------
+
+    def set_state(self, state: State) -> None:
+        """Set the desired state. The GTK timer picks it up within 150ms."""
+        self._desired_state = state
+        self._level_text = None  # reset level bar on any state change
+
+    def set_level(self, normalized: float) -> None:
+        """Set the live level bar text. Only meaningful during RECORDING."""
+        filled = min(int(normalized * _METER_WIDTH), _METER_WIDTH)
+        bar = "|" * filled + "." * (_METER_WIDTH - filled)
+        self._level_text = f"  Rec [{bar}]  "
     # end StatusWindow
 
 
@@ -245,6 +267,8 @@ class TrayDaemon:
         self._server_thread: Optional[threading.Thread] = None
         self._window: Optional[StatusWindow] = None
         self._running = False
+        self._sd = None  # cached sounddevice module
+        self._whisper_model_cache: dict = {}  # {"model_name": loaded_model}
 
     # -- State management ----------------------------------------------------
 
@@ -266,7 +290,7 @@ class TrayDaemon:
             self._start_recording()
         elif state == State.RECORDING:
             self._stop_recording()
-        # TRANSCRIBING: ignore
+        # TRANSCRIBING: ignore second press
 
     def _start_recording(self) -> None:
         if self._get_state() != State.IDLE:
@@ -287,44 +311,77 @@ class TrayDaemon:
             self._stop_recording_event.set()
 
     def _recording_worker(self, stop_event: threading.Event) -> None:
-        """Background thread: record -> transcribe -> clipboard -> notify."""
+        """Background thread: record -> transcribe -> clipboard -> back to idle."""
+        # Silence stderr for this thread — the spinner and level-meter in
+        # transcriber.py write to sys.stderr, which can block when the
+        # daemon is launched from a terminal whose buffer fills up.
+        import io
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
         try:
-            # Inject the venv's site-packages so sounddevice/numpy/whisper are importable
-            # when tray.py runs under system python3 (for GTK bindings).
-            _here = pathlib.Path(__file__).parent
-            _venv_lib = _here / ".venv" / "lib"
-            if _venv_lib.exists():
-                for _pydir in _venv_lib.iterdir():
-                    _site = _pydir / "site-packages"
-                    if _site.exists() and str(_site) not in sys.path:
-                        sys.path.insert(0, str(_site))
-                        break
-            sys.path.insert(0, str(_here))
+            self._ensure_venv_imports()
             from transcriber import _import_sounddevice, transcribe, record_audio
 
-            sd = _import_sounddevice()
-            audio = record_audio(sd, stop_event=stop_event, interactive=False)
+            if self._sd is None:
+                self._sd = _import_sounddevice()
+
+            def _on_level(normalized: float) -> None:
+                if self._window is not None and self._get_state() == State.RECORDING:
+                    self._window.set_level(normalized)
+
+            audio = record_audio(
+                self._sd,
+                stop_event=stop_event,
+                interactive=False,
+                on_level=_on_level,
+            )
 
             if audio is None:
                 self._set_state(State.IDLE)
-                _notify("Voice Transcriber", "No audio captured.")
+                threading.Thread(target=_notify, args=("Voice Transcriber", "No audio captured."), daemon=True).start()
                 return
 
             self._set_state(State.TRANSCRIBING)
-            text = transcribe(audio, model_name=self._model, language=self._language)
+            text = transcribe(
+                audio,
+                model_name=self._model,
+                language=self._language,
+                model_cache=self._whisper_model_cache,
+            )
 
             if text:
-                copied = _copy_to_clipboard(text)
-                note = " — copied to clipboard" if copied else ""
-                _notify("Voice Transcriber", text + note)
+                _copy_to_clipboard(text)
+            self._set_state(State.IDLE)
+
+            if text:
+                threading.Thread(target=_notify, args=("Voice Transcriber", text), daemon=True).start()
             else:
-                _notify("Voice Transcriber", "Transcription was empty.")
+                threading.Thread(target=_notify, args=("Voice Transcriber", "Transcription was empty."), daemon=True).start()
 
         except Exception as exc:  # noqa: BLE001
-            _notify("Voice Transcriber — Error", str(exc))
-        finally:
             self._set_state(State.IDLE)
+            threading.Thread(target=_notify, args=("Voice Transcriber - Error", str(exc)), daemon=True).start()
+        finally:
+            sys.stderr = old_stderr
         # end _recording_worker
+
+    def _ensure_venv_imports(self) -> None:
+        """Add the venv's site-packages to sys.path once so sounddevice/
+        numpy/whisper are importable under system python3."""
+        if getattr(self, "_venv_injected", False):
+            return
+        _here = pathlib.Path(__file__).parent
+        _venv_lib = _here / ".venv" / "lib"
+        if _venv_lib.exists():
+            for _pydir in _venv_lib.iterdir():
+                _site = _pydir / "site-packages"
+                if _site.exists() and str(_site) not in sys.path:
+                    sys.path.insert(0, str(_site))
+                    break
+        if str(_here) not in sys.path:
+            sys.path.insert(0, str(_here))
+        self._venv_injected = True
+        # end _ensure_venv_imports
 
     # -- Unix socket server --------------------------------------------------
 
@@ -425,7 +482,7 @@ def cmd_toggle() -> None:
     response = _send_command("toggle")
     if response is None:
         print("ERROR: voice-transcriber daemon is not running.", file=sys.stderr)
-        print("Start it with: python tray.py", file=sys.stderr)
+        print("Start it with: voice-transcriber-tray", file=sys.stderr)
         sys.exit(1)
     # end cmd_toggle
 

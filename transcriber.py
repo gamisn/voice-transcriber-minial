@@ -140,6 +140,7 @@ def record_audio(
     sd,
     stop_event: Optional[threading.Event] = None,
     interactive: bool = True,
+    on_level: Optional[callable] = None,
 ) -> Optional[np.ndarray]:
     """Record audio from the default microphone until the user stops.
 
@@ -151,6 +152,9 @@ def record_audio(
         interactive: When True, prints prompts and listens for keystrokes
             to stop recording. Set to False when stop_event is managed
             externally (e.g. from the tray daemon).
+        on_level: Optional callback called with a normalized RMS float
+            [0.0, 1.0] every ~100ms during recording. When provided, the
+            stderr level bar is suppressed so the caller handles display.
     """
     chunks: list[np.ndarray] = []
 
@@ -173,19 +177,26 @@ def record_audio(
         callback=_callback,
     )
 
-    # Visual level meter in a background thread
     meter_stop = threading.Event()
 
     def _level_meter():
+        # Normalisation constant: int16 peak is 32768; target "loud speech"
+        # at ~0.5 normalised around RMS ~400-600.
+        _rms_scale = 600.0
         while not meter_stop.is_set():
             if chunks:
                 latest = chunks[-1].astype(np.float32)
                 rms = np.sqrt(np.mean(latest ** 2))
-                # Normalize to a 0-30 bar
-                level = min(int(rms / 800 * 30), 30)
-                bar = "█" * level + "░" * (30 - level)
-                sys.stderr.write(f"\r  Level: [{bar}] ")
-                sys.stderr.flush()
+                normalized = min(rms / _rms_scale, 1.0)
+
+                if on_level is not None:
+                    on_level(normalized)
+                else:
+                    # Terminal bar: 0-30 blocks
+                    level = min(int(rms / 800 * 30), 30)
+                    bar = "█" * level + "░" * (30 - level)
+                    sys.stderr.write(f"\r  Level: [{bar}] ")
+                    sys.stderr.flush()
             time.sleep(0.1)
 
     meter_thread = threading.Thread(target=_level_meter, daemon=True)
@@ -221,16 +232,33 @@ def record_audio(
 # Transcription
 # ---------------------------------------------------------------------------
 
-def transcribe(audio: np.ndarray, model_name: str, language: str) -> str:
-    """Load Whisper model and transcribe the in-memory audio."""
+def transcribe(
+    audio: np.ndarray,
+    model_name: str,
+    language: str,
+    model_cache: Optional[dict] = None,
+) -> str:
+    """Load Whisper model and transcribe the in-memory audio.
+
+    Args:
+        model_cache: Optional dict used to persist loaded models across calls.
+            When provided, the model is loaded once and reused on subsequent
+            calls with the same model_name, making the 2nd+ transcription
+            significantly faster.
+    """
     whisper = _import_whisper()
 
-    spinner = Spinner(f"Loading Whisper model '{model_name}'")
-    spinner.start()
-    model = whisper.load_model(model_name)
-    spinner.stop(f"✓ Model '{model_name}' loaded")
+    if model_cache is not None and model_name in model_cache:
+        model = model_cache[model_name]
+        sys.stderr.write(f"✓ Model '{model_name}' (cached)\n")
+    else:
+        spinner = Spinner(f"Loading Whisper model '{model_name}'")
+        spinner.start()
+        model = whisper.load_model(model_name)
+        spinner.stop(f"✓ Model '{model_name}' loaded")
+        if model_cache is not None:
+            model_cache[model_name] = model
 
-    # Whisper expects float32 in [-1, 1]
     audio_f32 = audio.astype(np.float32) / 32768.0
 
     spinner = Spinner("Transcribing audio")
@@ -315,11 +343,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def copy_to_clipboard(text: str) -> bool:
-    """Try to copy text to the X11/Wayland clipboard."""
+    """Try to copy text to the system clipboard (Linux/macOS)."""
     import subprocess
-    for cmd in (["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"], ["wl-copy"]):
+    for cmd in (
+        ["wl-copy"],
+        ["xclip", "-selection", "clipboard"],
+        ["xsel", "--clipboard", "--input"],
+        ["pbcopy"],  # macOS
+    ):
         try:
-            proc = subprocess.run(cmd, input=text.encode(), check=True, capture_output=True)
+            subprocess.run(cmd, input=text.encode(), check=True, capture_output=True)
             return True
         except (FileNotFoundError, subprocess.CalledProcessError):
             continue

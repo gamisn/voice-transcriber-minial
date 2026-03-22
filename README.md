@@ -4,11 +4,19 @@ Record your voice and transcribe it locally using [OpenAI Whisper](https://githu
 
 ## Quick Start
 
+**Linux (Pop!_OS / Ubuntu / Debian):**
+
 ```bash
 ./install.sh
 ```
 
-That's it. The installer handles everything:
+**macOS:**
+
+```bash
+./install_mac.sh
+```
+
+The Linux installer handles everything automatically:
 
 - Installs system packages (PortAudio, ffmpeg, notify-send) via `apt`
 - Creates a Python venv and installs Whisper + dependencies
@@ -121,11 +129,59 @@ voice-transcriber-toggle
 **Floating window not appearing on login**
 Check `~/.config/autostart/voice-transcriber.desktop` exists. You can also start it manually with `voice-transcriber-tray`.
 
+## macOS
+
+On macOS the floating window is not available (no GTK). The CLI mode works identically, and the result is auto-copied to your clipboard via `pbcopy`.
+
+### Install (macOS)
+
+Requires [Homebrew](https://brew.sh):
+
+```bash
+./install_mac.sh
+```
+
+This installs `portaudio` and `ffmpeg` via Homebrew, creates a venv, and drops a `voice-transcriber` wrapper in `~/.local/bin`.
+
+### Usage (macOS)
+
+```bash
+# Record, transcribe, and copy to clipboard in one shot
+voice-transcriber --clipboard
+
+# Use a more accurate model
+voice-transcriber -m small --clipboard
+```
+
+Workflow:
+1. Run `voice-transcriber --clipboard`
+2. Speak
+3. Press **Enter** or **Space** to stop
+4. Result is printed and already in your clipboard — **Cmd+V** to paste
+
+### Tip: bind a hotkey on macOS
+
+Use **macOS Shortcuts** (or Alfred/Raycast) to create an action that runs:
+
+```
+/Users/YOUR_USER/.local/bin/voice-transcriber --clipboard
+```
+
+in a terminal window. That gives you a one-key workflow similar to the Linux tray mode.
+
 ## Uninstall
+
+**Linux:**
 
 ```bash
 rm ~/.local/bin/voice-transcriber ~/.local/bin/voice-transcriber-tray ~/.local/bin/voice-transcriber-toggle
 rm ~/.config/autostart/voice-transcriber.desktop
+```
+
+**macOS:**
+
+```bash
+rm ~/.local/bin/voice-transcriber
 ```
 
 ## License
