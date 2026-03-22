@@ -1,0 +1,17 @@
+[project]
+name = "voice-transcriber"
+version = "1.0.0"
+description = "Record your voice and transcribe it locally using OpenAI Whisper."
+requires-python = ">=3.10"
+dependencies = [
+    "openai-whisper",
+    "sounddevice",
+    "numpy",
+]
+
+[project.optional-dependencies]
+# For faster Whisper inference on NVIDIA GPUs
+gpu = ["torch[cuda]"]
+
+[project.scripts]
+voice-transcriber = "transcriber:main"
