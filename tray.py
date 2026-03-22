@@ -184,6 +184,83 @@ def _send_command(command: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Recording overlay — small always-on-top pill shown during recording
+# ---------------------------------------------------------------------------
+
+_OVERLAY_CSS = b"""
+#vt-overlay {
+    background-color: rgba(30, 30, 30, 0.88);
+    border-radius: 18px;
+    padding: 6px 18px;
+}
+#vt-overlay label {
+    color: #ffffff;
+    font-family: monospace;
+    font-size: 13px;
+}
+"""
+
+
+class RecordingOverlay:
+    """A small floating pill at the top-center of the screen that shows
+    recording state and the live audio level bar."""
+
+    def __init__(self, Gtk, Gdk, GLib) -> None:
+        self._Gtk = Gtk
+        self._Gdk = Gdk
+
+        provider = Gtk.CssProvider()
+        provider.load_from_data(_OVERLAY_CSS)
+        Gtk.StyleContext.add_provider_for_screen(
+            Gdk.Screen.get_default(),
+            provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+
+        self._win = Gtk.Window(type=Gtk.WindowType.POPUP)
+        self._win.set_name("vt-overlay")
+        self._win.set_decorated(False)
+        self._win.set_keep_above(True)
+        self._win.set_accept_focus(False)
+        self._win.set_resizable(False)
+        self._win.stick()
+
+        screen = Gdk.Screen.get_default()
+        visual = screen.get_rgba_visual()
+        if visual is not None:
+            self._win.set_visual(visual)
+        self._win.set_app_paintable(True)
+
+        self._label = Gtk.Label(label="")
+        self._label.set_name("vt-overlay")
+        self._win.add(self._label)
+
+    def _reposition(self) -> None:
+        """Center the overlay horizontally near the top of the primary monitor."""
+        display = self._Gdk.Display.get_default()
+        monitor = display.get_primary_monitor() or display.get_monitor(0)
+        geom = monitor.get_geometry()
+        self._win.show_all()
+        alloc = self._win.get_allocation()
+        x = geom.x + (geom.width - alloc.width) // 2
+        y = geom.y + 32
+        self._win.move(x, y)
+
+    def show(self, text: str) -> None:
+        self._label.set_text(text)
+        self._reposition()
+        self._win.show_all()
+
+    def update_text(self, text: str) -> None:
+        self._label.set_text(text)
+        self._reposition()
+
+    def hide(self) -> None:
+        self._win.hide()
+    # end RecordingOverlay
+
+
+# ---------------------------------------------------------------------------
 # Panel indicator (Ayatana AppIndicator3 → COSMIC / GNOME status area)
 # ---------------------------------------------------------------------------
 
@@ -195,7 +272,7 @@ class PanelIndicator:
         import gi
         gi.require_version("Gtk", "3.0")
         gi.require_version("AyatanaAppIndicator3", "0.1")
-        from gi.repository import Gtk, GLib, AyatanaAppIndicator3
+        from gi.repository import Gtk, Gdk, GLib, AyatanaAppIndicator3
 
         self._Gtk = Gtk
         self._GLib = GLib
@@ -231,15 +308,18 @@ class PanelIndicator:
         self._menu.show_all()
         self._indicator.set_menu(self._menu)
 
+        self._overlay = RecordingOverlay(Gtk, Gdk, GLib)
+
         # Single timer drives all UI updates from the GTK main thread.
         GLib.timeout_add(150, self._poll_and_render)
 
     def _on_quit(self, *_) -> None:
+        self._overlay.hide()
         self._Gtk.main_quit()
 
     def _poll_and_render(self) -> bool:
         """Called every 150ms on the GTK main thread. Reads shared state
-        written by worker threads and updates the indicator."""
+        written by worker threads and updates the indicator + overlay."""
         state = self._desired_state
 
         if state != self._rendered_state:
@@ -248,11 +328,18 @@ class PanelIndicator:
             self._toggle_item.set_label(label)
             self._rendered_state = state
 
-        # During recording, show the live level bar in the menu item label.
+            if state == State.RECORDING:
+                self._overlay.show("Rec [............]")
+            elif state == State.TRANSCRIBING:
+                self._overlay.update_text("Transcribing...")
+            else:
+                self._overlay.hide()
+
         if state == State.RECORDING:
             level_text = self._level_text
             if level_text is not None:
                 self._toggle_item.set_label(level_text)
+                self._overlay.update_text(level_text)
 
         return True  # keep repeating
 
