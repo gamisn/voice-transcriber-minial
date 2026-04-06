@@ -11,3 +11,8 @@ dependencies = [
 
 [project.optional-dependencies]
 gpu = ["torch[cuda]"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
