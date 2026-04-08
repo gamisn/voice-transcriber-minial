@@ -24,6 +24,9 @@ env/
 # WAV recordings
 *.wav
 
+# macOS .app bundle (build artifact)
+Voice Transcriber.app/
+
 # Editor / OS
 .DS_Store
 .idea/

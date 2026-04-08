@@ -56,10 +56,10 @@ fi
 
 info "Installing Python packages..."
 if command -v uv &>/dev/null; then
-    uv pip install --python "$VENV_DIR/bin/python" openai-whisper sounddevice numpy
+    uv pip install --python "$VENV_DIR/bin/python" "openai-whisper>=20250625" sounddevice numpy
 else
     "$VENV_DIR/bin/python" -m ensurepip --upgrade 2>/dev/null || true
-    "$VENV_DIR/bin/python" -m pip install --quiet openai-whisper sounddevice numpy
+    "$VENV_DIR/bin/python" -m pip install --quiet "openai-whisper>=20250625" sounddevice numpy
 fi
 
 # ── 3. Wrapper scripts in ~/.local/bin ──────────────────────────────────────
