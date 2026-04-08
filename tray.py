@@ -18,6 +18,7 @@ Keyboard shortcut setup (COSMIC / Pop!_OS):
 
 from __future__ import annotations
 
+import argparse
 import os
 import pathlib
 import signal
@@ -27,6 +28,7 @@ import sys
 import threading
 from enum import Enum, auto
 from typing import Callable, Optional
+
 
 # ---------------------------------------------------------------------------
 # Runtime paths
@@ -48,7 +50,6 @@ class State(Enum):
     TRANSCRIBING = auto()
 
 
-# State display: (menu_label, icon_filename_stem)
 _STATE_UI = {
     State.IDLE:         ("Mic: ready — click to record", "vt-idle"),
     State.RECORDING:    ("Recording...",                 "vt-recording"),
@@ -69,12 +70,10 @@ _ICONS_SVG = {
   <line x1="11" y1="16" x2="11" y2="19" stroke="#cccccc" stroke-width="1.5"/>
   <line x1="8" y1="19" x2="14" y2="19" stroke="#cccccc" stroke-width="1.5"/>
 </svg>""",
-
     "vt-recording": """<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
   <circle cx="11" cy="11" r="10" fill="#8b0000"/>
   <circle cx="11" cy="11" r="5" fill="#ff4444"/>
 </svg>""",
-
     "vt-transcribing": """<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
   <circle cx="11" cy="11" r="10" fill="#5a4000"/>
   <text x="11" y="15" text-anchor="middle" font-size="10" fill="#ffd060" font-family="monospace">...</text>
@@ -113,50 +112,6 @@ def _notify(title: str, body: str) -> None:
     except FileNotFoundError:
         pass
     # end _notify
-
-
-# ---------------------------------------------------------------------------
-# Clipboard
-# ---------------------------------------------------------------------------
-
-
-def _copy_to_clipboard(text: str) -> bool:
-    """Copy text to the system clipboard; returns True on success.
-
-    wl-copy forks a background child to serve paste requests, so we must
-    NOT use capture_output=True -- that keeps the pipe open until the child
-    exits (i.e. until the next clipboard write), which would block the worker
-    thread indefinitely and leave the tray stuck on 'Transcribing...'.
-    We use Popen with DEVNULL for output and wait only for the parent to exit.
-    """
-    data = text.encode()
-    for cmd in (
-        ["wl-copy"],
-        ["xclip", "-selection", "clipboard"],
-        ["xsel", "--clipboard", "--input"],
-        ["pbcopy"],  # macOS
-    ):
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            proc.stdin.write(data)
-            proc.stdin.close()
-            proc.wait(timeout=2)
-            return True
-        except FileNotFoundError:
-            continue
-        except (subprocess.TimeoutExpired, OSError):
-            try:
-                proc.kill()
-            except OSError:
-                pass
-            continue
-    return False
-    # end _copy_to_clipboard
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +160,7 @@ class RecordingOverlay:
     """A small floating pill at the top-center of the screen that shows
     recording state and the live audio level bar."""
 
-    def __init__(self, Gtk, Gdk, GLib) -> None:
+    def __init__(self, Gtk: object, Gdk: object, GLib: object) -> None:
         self._Gtk = Gtk
         self._Gdk = Gdk
 
@@ -268,7 +223,7 @@ class RecordingOverlay:
 class PanelIndicator:
     """System tray indicator that lives in the COSMIC/GNOME panel."""
 
-    def __init__(self, on_toggle_callback: Callable) -> None:
+    def __init__(self, on_toggle_callback: Callable[[], None]) -> None:
         import gi
         gi.require_version("Gtk", "3.0")
         gi.require_version("AyatanaAppIndicator3", "0.1")
@@ -278,7 +233,6 @@ class PanelIndicator:
         self._GLib = GLib
         self._on_toggle = on_toggle_callback
 
-        # Shared state — written by worker threads, read by the GTK timer.
         self._desired_state = State.IDLE
         self._rendered_state: Optional[State] = None
         self._level_text: Optional[str] = None
@@ -310,16 +264,14 @@ class PanelIndicator:
 
         self._overlay = RecordingOverlay(Gtk, Gdk, GLib)
 
-        # Single timer drives all UI updates from the GTK main thread.
         GLib.timeout_add(150, self._poll_and_render)
 
-    def _on_quit(self, *_) -> None:
+    def _on_quit(self, *_args: object) -> None:
         self._overlay.hide()
         self._Gtk.main_quit()
 
     def _poll_and_render(self) -> bool:
-        """Called every 150ms on the GTK main thread. Reads shared state
-        written by worker threads and updates the indicator + overlay."""
+        """Called every 150ms on the GTK main thread."""
         state = self._desired_state
 
         if state != self._rendered_state:
@@ -341,16 +293,14 @@ class PanelIndicator:
                 self._toggle_item.set_label(level_text)
                 self._overlay.update_text(level_text)
 
-        return True  # keep repeating
-
-    # -- Public API (thread-safe: only sets plain Python attributes) ----------
+        return True
 
     def set_state(self, state: State) -> None:
         self._desired_state = state
         self._level_text = None
 
-    def set_level(self, normalized: float) -> None:
-        filled = min(int(normalized * _METER_WIDTH), _METER_WIDTH)
+    def set_level(self, normalised: float) -> None:
+        filled = min(int(normalised * _METER_WIDTH), _METER_WIDTH)
         bar = "|" * filled + "." * (_METER_WIDTH - filled)
         self._level_text = f"Rec [{bar}]"
     # end PanelIndicator
@@ -365,8 +315,10 @@ class TrayDaemon:
     """Background daemon that owns the recording lifecycle and panel indicator."""
 
     def __init__(self) -> None:
-        self._model = "base"
-        self._language = "en"
+        self._model: str = "base"
+        self._language: str = "en"
+        self._domain_hint: str = "auto"
+        self._custom_terms: list[str] = []
         self._state = State.IDLE
         self._state_lock = threading.Lock()
         self._stop_recording_event: Optional[threading.Event] = None
@@ -374,8 +326,7 @@ class TrayDaemon:
         self._server_thread: Optional[threading.Thread] = None
         self._indicator: Optional[PanelIndicator] = None
         self._running = False
-        self._sd = None  # cached sounddevice module
-        self._whisper_model_cache: dict = {}
+        self._sd: Optional[object] = None
 
     # -- State management ----------------------------------------------------
 
@@ -397,7 +348,6 @@ class TrayDaemon:
             self._start_recording()
         elif state == State.RECORDING:
             self._stop_recording()
-        # TRANSCRIBING: ignore
 
     def _start_recording(self) -> None:
         if self._get_state() != State.IDLE:
@@ -418,17 +368,20 @@ class TrayDaemon:
             self._stop_recording_event.set()
 
     def _recording_worker(self, stop_event: threading.Event) -> None:
-        """Background thread: record -> transcribe -> clipboard -> notify."""
+        """Background thread: record -> transcribe -> pipeline -> clipboard -> notify."""
         try:
-            self._ensure_venv_imports()
-            from transcriber import _import_sounddevice, transcribe, record_audio
+            from voice_transcriber.clipboard import copy_to_clipboard
+            from voice_transcriber.models import ProcessingOptions
+            from voice_transcriber.pipeline import process_transcript
+            from voice_transcriber.recorder import import_sounddevice, record_audio
+            from voice_transcriber.transcription import transcribe_audio
 
             if self._sd is None:
-                self._sd = _import_sounddevice()
+                self._sd = import_sounddevice()
 
-            def _on_level(normalized: float) -> None:
+            def _on_level(normalised: float) -> None:
                 if self._indicator is not None and self._get_state() == State.RECORDING:
-                    self._indicator.set_level(normalized)
+                    self._indicator.set_level(normalised)
 
             audio = record_audio(
                 self._sd,
@@ -448,29 +401,34 @@ class TrayDaemon:
 
             self._set_state(State.TRANSCRIBING)
 
-            # quiet=True: no Spinner, no stderr writes, no GIL contention.
-            text = transcribe(
+            raw_text = transcribe_audio(
                 audio,
                 model_name=self._model,
                 language=self._language,
-                model_cache=self._whisper_model_cache,
                 quiet=True,
             )
 
-            # Copy to clipboard and go idle BEFORE sending the notification,
-            # so the notification never blocks the state transition.
-            if text:
-                _copy_to_clipboard(text)
+            result = process_transcript(
+                raw_transcript=raw_text,
+                options=ProcessingOptions(
+                    language=self._language,
+                    domain_hint=self._domain_hint,
+                    custom_terms=self._custom_terms,
+                ),
+            )
+
+            if result.final_output:
+                copy_to_clipboard(result.final_output)
             self._set_state(State.IDLE)
 
-            msg = text if text else "Transcription was empty."
+            msg = result.final_output if result.final_output else "Transcription was empty."
             threading.Thread(
                 target=_notify,
                 args=("Voice Transcriber", msg),
                 daemon=True,
             ).start()
 
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._set_state(State.IDLE)
             threading.Thread(
                 target=_notify,
@@ -480,20 +438,20 @@ class TrayDaemon:
         # end _recording_worker
 
     def _ensure_venv_imports(self) -> None:
-        """Inject the venv's site-packages so sounddevice/numpy/whisper are
-        importable when tray.py runs under system python3."""
+        """Inject the venv's site-packages so the shared package is importable
+        when tray.py runs under system python3."""
         if getattr(self, "_venv_injected", False):
             return
-        _here = pathlib.Path(__file__).parent
-        _venv_lib = _here / ".venv" / "lib"
-        if _venv_lib.exists():
-            for _pydir in _venv_lib.iterdir():
-                _site = _pydir / "site-packages"
-                if _site.exists() and str(_site) not in sys.path:
-                    sys.path.insert(0, str(_site))
+        here = pathlib.Path(__file__).parent
+        venv_lib = here / ".venv" / "lib"
+        if venv_lib.exists():
+            for pydir in venv_lib.iterdir():
+                site = pydir / "site-packages"
+                if site.exists() and str(site) not in sys.path:
+                    sys.path.insert(0, str(site))
                     break
-        if str(_here) not in sys.path:
-            sys.path.insert(0, str(_here))
+        if str(here) not in sys.path:
+            sys.path.insert(0, str(here))
         self._venv_injected = True
         # end _ensure_venv_imports
 
@@ -549,7 +507,7 @@ class TrayDaemon:
     # -- SIGUSR1 signal handler ----------------------------------------------
 
     def _setup_signal_handler(self) -> None:
-        def _handler(signum, frame):
+        def _handler(signum: int, frame: object) -> None:
             threading.Thread(target=self.toggle, daemon=True).start()
 
         try:
@@ -559,7 +517,7 @@ class TrayDaemon:
 
     # -- Lifecycle -----------------------------------------------------------
 
-    def run(self, model: str = "base", language: str = "en") -> None:
+    def run(self, model: str, language: str, domain_hint: str, custom_terms: list[str]) -> None:
         """Start the daemon. Blocks until the user quits."""
         import gi
         gi.require_version("Gtk", "3.0")
@@ -567,7 +525,11 @@ class TrayDaemon:
 
         self._model = model
         self._language = language
+        self._domain_hint = domain_hint
+        self._custom_terms = custom_terms
         self._running = True
+
+        self._ensure_venv_imports()
 
         _ensure_cache_dir()
         _PID_PATH.write_text(str(os.getpid()))
@@ -612,8 +574,6 @@ def cmd_status() -> None:
 
 
 def main() -> None:
-    import argparse
-
     parser = argparse.ArgumentParser(
         prog="voice-transcriber-tray",
         description="Voice transcriber panel indicator.",
@@ -627,14 +587,19 @@ def main() -> None:
     )
     parser.add_argument(
         "-m", "--model",
-        default="base",
+        default=None,
         choices=["tiny", "base", "small", "medium", "large"],
-        help="Whisper model size (default: base).",
+        help="Whisper model size. Overrides config default.",
     )
     parser.add_argument(
         "-l", "--language",
-        default="en",
-        help="Language code for transcription (default: en).",
+        default=None,
+        help="Language code for transcription. Overrides config default.",
+    )
+    parser.add_argument(
+        "--domain",
+        default=None,
+        help="Force a domain hint (e.g. 'technical', 'general'). Overrides config.",
     )
 
     args = parser.parse_args()
@@ -644,8 +609,20 @@ def main() -> None:
     elif args.command == "status":
         cmd_status()
     else:
+        from voice_transcriber.config import load_config
+
+        config = load_config()
+        model = args.model if args.model is not None else config.default_model
+        language = args.language if args.language is not None else config.default_language
+        domain_hint = args.domain if args.domain is not None else config.domain_hint
+
         daemon = TrayDaemon()
-        daemon.run(model=args.model, language=args.language)
+        daemon.run(
+            model=model,
+            language=language,
+            domain_hint=domain_hint,
+            custom_terms=config.custom_terms,
+        )
     # end main
 
 

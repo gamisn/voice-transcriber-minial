@@ -1,8 +1,12 @@
-.PHONY: install install-gpu run tray toggle clean
+.PHONY: install install-gpu install-mac run tray tray-mac toggle test clean
 
-# Full setup: venv, deps, shortcuts, autostart
+# Full setup: venv, deps, shortcuts, autostart (Linux)
 install:
 	./install.sh
+
+# macOS setup: venv, deps, menubar daemon, launchd
+install-mac:
+	./install_mac.sh
 
 # Install with NVIDIA GPU support (CUDA)
 install-gpu:
@@ -15,13 +19,21 @@ install-gpu:
 run:
 	.venv/bin/python transcriber.py
 
-# Start the floating status window daemon
+# Start the panel daemon (Linux — GTK/AppIndicator)
 tray:
 	/usr/bin/python3 tray.py
+
+# Start the menubar daemon (macOS — NSStatusItem)
+tray-mac:
+	.venv/bin/python mac_menubar.py
 
 # Toggle recording in the running daemon
 toggle:
 	/usr/bin/python3 tray.py toggle
+
+# Run the test suite
+test:
+	.venv/bin/python -m pytest tests/ -v
 
 clean:
 	rm -rf __pycache__ *.pyc

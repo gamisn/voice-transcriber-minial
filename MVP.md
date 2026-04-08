@@ -39,16 +39,17 @@ domain-specific vocabulary, which the glossary correction layer addresses.
 
 ## Platforms
 
-- **Linux** (Pop!_OS / Ubuntu / Debian) — tray daemon with system shortcut. Already works.
-- **macOS** — menubar presence or launchd-based shortcut handler so the shortcut works system-wide
-  without an open terminal. The bare CLI-in-terminal approach is not MVP-quality.
+- **Linux** (Pop!_OS / Ubuntu / Debian) — tray daemon with system shortcut. Working.
+- **macOS** — menubar daemon with Cmd+Shift+R global hotkey via PyObjC/CGEventTap. Working.
+- **Windows** — CLI mode with native clipboard support. Tray mode not yet implemented.
 
 Phone is **out of scope** for MVP.
 
 ## Install Experience
 
-- **Linux:** `./install.sh` — installs deps, creates venv, registers shortcut.
-- **macOS:** `./install_mac.sh` — installs deps, creates venv, sets up menubar/shortcut integration.
+- **Linux:** `./install.sh` — installs deps, creates venv, registers shortcut, auto-start.
+- **macOS:** `./install_mac.sh` — installs deps, creates venv, sets up menubar daemon, launchd auto-start.
+- **Windows:** `install_windows.bat` — creates venv, installs deps, creates wrapper script.
 
 ## What MVP is NOT
 
@@ -61,31 +62,49 @@ Phone is **out of scope** for MVP.
 
 ## Milestones
 
-### M1: Wire the Pipeline
+### M1: Wire the Pipeline — DONE
 
-- Connect the shared processing pipeline to both CLI and tray entry points.
-- Simplify config to MVP fields: model, language, domain_hint, custom_terms.
-- Keep current behavior intact (clipboard, notifications, shortcuts).
+- Extracted shared audio recording into `voice_transcriber/recorder.py`.
+- Extracted shared Whisper transcription into `voice_transcriber/transcription.py`.
+- Connected the shared processing pipeline to both CLI and tray entry points.
+- Simplified config to MVP fields: model, language, domain_hint, custom_terms.
+- CLI flags override config values; config loads with safe defaults.
+- Both `transcriber.py` (CLI) and `tray.py` (Linux tray) now use the same pipeline:
+  raw Whisper output -> domain detection -> glossary correction -> text normalisation -> clipboard.
 
-### M2: Domain Correction and Output Quality
+### M2: Domain Correction and Output Quality — DONE
 
-- Ship the tech glossary with auto-detection.
-- Add custom terms support via config.
-- Add a normalization pass so output is truly paste-ready.
-- Manual domain override via CLI flag and config.
+- Tech glossary shipped with auto-detection (`voice_transcriber/domain.py`).
+- Custom terms support via config file.
+- Normalisation pass produces paste-ready output (capitalisation, punctuation, whitespace).
+- Manual domain override via `--domain` CLI flag and `domain_hint` config key.
+- Integration tests validate correction of common Whisper mishearings
+  (docker/Docker, cooper netties/Kubernetes, aws lamda/AWS Lambda, etc.).
 
-### M3: macOS First-Class Support
+### M3: macOS First-Class Support — DONE
 
-- Menubar presence or launchd-based shortcut handler.
-- System-wide shortcut that works without an open terminal.
-- Same pipeline, same quality, clipboard output.
-- `./install_mac.sh` sets everything up end to end.
+- `mac_menubar.py`: macOS menubar daemon using PyObjC NSStatusItem.
+- Global Cmd+Shift+R hotkey via Quartz CGEventTap (requires Accessibility permission).
+- Same shared pipeline as Linux — same quality, same corrections.
+- macOS notifications via osascript.
+- `./install_mac.sh` sets up everything: venv, deps, wrapper scripts, launchd auto-start.
+- `voice-transcriber-tray` and `voice-transcriber-toggle` commands work on macOS.
 
-### M4: Tests and Docs
+### M4: Tests and Docs — DONE
 
-- Unit tests for pipeline, config, domain, formatter.
-- README update reflecting actual MVP features.
-- Install docs for both platforms.
+- Unit tests for config loading and round-tripping (`tests/test_config.py`).
+- Unit tests for pipeline processing (`tests/test_pipeline.py`).
+- Integration tests for full pipeline with realistic Whisper output (`tests/test_integration.py`).
+- 17 tests total, all passing.
+- README updated with full macOS setup, testing instructions, domain correction docs,
+  configuration reference, architecture overview, and troubleshooting for all platforms.
+- MVP.md updated to reflect completed milestones.
+
+### Windows support — PARTIAL
+
+- CLI mode works: clipboard via native win32 API (ctypes), key detection via msvcrt.
+- `install_windows.bat` installer script.
+- Tray/shortcut mode not yet implemented (would need pystray or similar).
 
 ## Future (Post-MVP)
 
@@ -93,3 +112,5 @@ Phone is **out of scope** for MVP.
 - More domains (professional email tone, medical, legal).
 - Phone companion app.
 - Real-time streaming transcription.
+- Windows tray/shortcut mode.
+- Performance optimisation: faster-whisper or whisper.cpp as drop-in replacement.
