@@ -17,33 +17,23 @@ from __future__ import annotations
 
 import argparse
 import os
-import pathlib
-import socket
 import subprocess
 import sys
 import threading
-from enum import Enum, auto
 from typing import Optional
 
-
-# ---------------------------------------------------------------------------
-# Runtime paths
-# ---------------------------------------------------------------------------
-
-_CACHE_DIR = pathlib.Path.home() / ".cache" / "voice-transcriber"
-_SOCK_PATH = _CACHE_DIR / "tray.sock"
-_PID_PATH = _CACHE_DIR / "tray.pid"
-
-
-# ---------------------------------------------------------------------------
-# State
-# ---------------------------------------------------------------------------
-
-
-class State(Enum):
-    IDLE = auto()
-    RECORDING = auto()
-    TRANSCRIBING = auto()
+from voice_transcriber.config import load_config
+from voice_transcriber.daemon import (
+    PID_PATH,
+    DaemonCore,
+    RecordingHooks,
+    SocketServer,
+    State,
+    ensure_cache_dir,
+    preload_model_async,
+    send_command,
+)
+from voice_transcriber.errors import log_recording_failure
 
 
 _STATE_TITLES = {
@@ -79,240 +69,95 @@ def _notify(title: str, body: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Unix socket helpers (same protocol as Linux tray)
+# Menubar daemon shell
 # ---------------------------------------------------------------------------
 
 
-def _ensure_cache_dir() -> None:
-    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+class MacMenubarHooks(RecordingHooks):
+    """Routes ``DaemonCore`` events to the macOS menu bar UI and overlay."""
 
+    def __init__(self, daemon: "MacMenubarDaemon") -> None:
+        self._daemon = daemon
+        # end __init__
 
-def _send_command(command: str) -> Optional[str]:
-    """Send a command to the running daemon and return its response."""
-    if not _SOCK_PATH.exists():
-        return None
-    try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(3.0)
-            sock.connect(str(_SOCK_PATH))
-            sock.sendall((command + "\n").encode())
-            return sock.recv(256).decode().strip()
-    except (ConnectionRefusedError, OSError):
-        return None
-    # end _send_command
+    def on_state_change(self, state: State) -> None:
+        self._daemon._render_state(state)  # noqa: SLF001 — UI bridge
+        overlay = self._daemon._overlay
+        if overlay is None:
+            return
+        if state == State.RECORDING:
+            overlay.show_recording()
+        elif state == State.TRANSCRIBING:
+            overlay.show_transcribing()
+        # end on_state_change
 
+    def on_level(self, normalized: float) -> None:
+        if self._daemon._overlay is not None:
+            self._daemon._overlay.update_level(normalized)
+        # end on_level
 
-# ---------------------------------------------------------------------------
-# Menubar daemon
-# ---------------------------------------------------------------------------
+    def on_result(self, final_text: str) -> None:
+        if self._daemon._overlay is not None:
+            self._daemon._overlay.show_result(final_text)
+        # end on_result
+
+    def on_empty(self) -> None:
+        if self._daemon._overlay is not None:
+            self._daemon._overlay.show_result("(no speech detected)")
+        # end on_empty
+
+    def on_error(self, summary: str) -> None:
+        short_msg = f"{summary}\nSee ~/.cache/voice-transcriber/error.log for details."
+        if self._daemon._overlay is not None:
+            self._daemon._overlay.show_result(short_msg)
+        else:
+            threading.Thread(
+                target=_notify,
+                args=("Voice Transcriber - Error", short_msg),
+                daemon=True,
+            ).start()
+        # end on_error
 
 
 class MacMenubarDaemon:
-    """macOS menu bar daemon with global hotkey support."""
+    """macOS NSStatusItem shell around ``DaemonCore`` with global hotkey."""
 
     def __init__(self) -> None:
-        self._model: str = "base"
-        self._language: str = "en"
-        self._domain_hint: str = "auto"
-        self._custom_terms: list[str] = []
-        self._state = State.IDLE
-        self._state_lock = threading.Lock()
-        self._stop_recording_event: Optional[threading.Event] = None
-        self._work_thread: Optional[threading.Thread] = None
-        self._server_thread: Optional[threading.Thread] = None
-        self._running = False
-        self._sd: Optional[object] = None
+        self._core: Optional[DaemonCore] = None
+        self._socket_server: Optional[SocketServer] = None
 
         self._status_item: Optional[object] = None
         self._toggle_menu_item: Optional[object] = None
         self._app: Optional[object] = None
         self._delegate: Optional[object] = None
         self._overlay: Optional[object] = None
+        # end __init__
 
-    # -- State management ----------------------------------------------------
+    def _toggle(self) -> None:
+        if self._core is not None:
+            self._core.toggle()
+        # end _toggle
 
-    def _set_state(self, state: State) -> None:
-        with self._state_lock:
-            self._state = state
-        self._update_ui()
-
-    def _get_state(self) -> State:
-        with self._state_lock:
-            return self._state
-
-    def _update_ui(self) -> None:
+    def _render_state(self, state: State) -> None:
         """Update the menu bar icon and menu label from any thread."""
         if self._status_item is None:
             return
         try:
-            from AppKit import NSApplication
             from PyObjCTools import AppHelper
-
-            state = self._get_state()
-            title = _STATE_TITLES[state]
-            label = _STATE_MENU_LABELS[state]
-
-            def _do_update() -> None:
-                self._status_item.setTitle_(title)
-                if self._toggle_menu_item is not None:
-                    self._toggle_menu_item.setTitle_(label)
-
-            AppHelper.callAfter(_do_update)
-        except Exception:
-            pass
-        # end _update_ui
-
-    # -- Toggle logic --------------------------------------------------------
-
-    def toggle(self) -> None:
-        state = self._get_state()
-        if state == State.IDLE:
-            self._start_recording()
-        elif state == State.RECORDING:
-            self._stop_recording()
-
-    def _start_recording(self) -> None:
-        if self._get_state() != State.IDLE:
+        except ImportError as exc:
+            log_recording_failure("update_ui_import", exc)
             return
-        self._set_state(State.RECORDING)
-        self._stop_recording_event = threading.Event()
-        self._work_thread = threading.Thread(
-            target=self._recording_worker,
-            args=(self._stop_recording_event,),
-            daemon=True,
-        )
-        self._work_thread.start()
 
-    def _stop_recording(self) -> None:
-        if self._get_state() != State.RECORDING:
-            return
-        if self._stop_recording_event is not None:
-            self._stop_recording_event.set()
+        title = _STATE_TITLES[state]
+        label = _STATE_MENU_LABELS[state]
 
-    def _recording_worker(self, stop_event: threading.Event) -> None:
-        """Background thread: record -> transcribe -> pipeline -> clipboard -> overlay."""
-        try:
-            from voice_transcriber.clipboard import copy_to_clipboard
-            from voice_transcriber.models import ProcessingOptions
-            from voice_transcriber.pipeline import process_transcript
-            from voice_transcriber.recorder import import_sounddevice, record_audio
-            from voice_transcriber.transcription import transcribe_audio
+        def _do_update() -> None:
+            self._status_item.setTitle_(title)
+            if self._toggle_menu_item is not None:
+                self._toggle_menu_item.setTitle_(label)
 
-            if self._sd is None:
-                self._sd = import_sounddevice()
-
-            if self._overlay is not None:
-                self._overlay.show_recording()
-
-            def _on_level(level: float) -> None:
-                if self._overlay is not None:
-                    self._overlay.update_level(level)
-
-            audio = record_audio(
-                self._sd,
-                stop_event=stop_event,
-                interactive=False,
-                on_level=_on_level,
-            )
-
-            if audio is None:
-                self._set_state(State.IDLE)
-                if self._overlay is not None:
-                    self._overlay.dismiss()
-                return
-
-            self._set_state(State.TRANSCRIBING)
-            if self._overlay is not None:
-                self._overlay.show_transcribing()
-
-            raw_text = transcribe_audio(
-                audio,
-                model_name=self._model,
-                language=self._language,
-                quiet=True,
-            )
-
-            result = process_transcript(
-                raw_transcript=raw_text,
-                options=ProcessingOptions(
-                    language=self._language,
-                    domain_hint=self._domain_hint,
-                    custom_terms=self._custom_terms,
-                ),
-            )
-
-            output = result.final_output if result.final_output else ""
-            if output:
-                copy_to_clipboard(output)
-
-            self._set_state(State.IDLE)
-
-            if self._overlay is not None:
-                if output:
-                    self._overlay.show_result(output)
-                else:
-                    self._overlay.show_result("(no speech detected)")
-
-        except Exception as exc:
-            self._set_state(State.IDLE)
-            if self._overlay is not None:
-                self._overlay.show_result(f"Error: {exc}")
-            else:
-                threading.Thread(
-                    target=_notify,
-                    args=("Voice Transcriber - Error", str(exc)),
-                    daemon=True,
-                ).start()
-        # end _recording_worker
-
-    # -- Unix socket server --------------------------------------------------
-
-    def _start_socket_server(self) -> None:
-        _ensure_cache_dir()
-        if _SOCK_PATH.exists():
-            _SOCK_PATH.unlink()
-
-        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server.bind(str(_SOCK_PATH))
-        server.listen(5)
-        server.settimeout(1.0)
-
-        def _serve() -> None:
-            while self._running:
-                try:
-                    conn, _ = server.accept()
-                    threading.Thread(
-                        target=self._handle_client,
-                        args=(conn,),
-                        daemon=True,
-                    ).start()
-                except socket.timeout:
-                    continue
-                except OSError:
-                    break
-            server.close()
-            if _SOCK_PATH.exists():
-                _SOCK_PATH.unlink()
-        # end _serve
-
-        self._server_thread = threading.Thread(target=_serve, daemon=True)
-        self._server_thread.start()
-
-    def _handle_client(self, conn: socket.socket) -> None:
-        try:
-            data = conn.recv(64).decode().strip()
-            if data == "toggle":
-                self.toggle()
-                conn.sendall(b"ok\n")
-            elif data == "status":
-                conn.sendall((self._get_state().name.lower() + "\n").encode())
-            else:
-                conn.sendall(b"unknown\n")
-        except OSError:
-            pass
-        finally:
-            conn.close()
-        # end _handle_client
+        AppHelper.callAfter(_do_update)
+        # end _render_state
 
     # -- Global hotkey via Quartz CGEventTap ---------------------------------
 
@@ -323,61 +168,60 @@ class MacMenubarDaemon:
         """
         try:
             import Quartz
-            from AppKit import NSEvent
-
-            _CMD_SHIFT_MASK = (
-                Quartz.kCGEventFlagMaskCommand | Quartz.kCGEventFlagMaskShift
-            )
-            _KEY_R = 15
-
-            def _tap_callback(proxy: int, event_type: int, event: object, refcon: object) -> object:
-                if event_type == Quartz.kCGEventKeyDown:
-                    keycode = Quartz.CGEventGetIntegerValueField(
-                        event, Quartz.kCGKeyboardEventKeycode,
-                    )
-                    flags = Quartz.CGEventGetFlags(event)
-                    modifier_only = flags & (
-                        Quartz.kCGEventFlagMaskCommand
-                        | Quartz.kCGEventFlagMaskShift
-                        | Quartz.kCGEventFlagMaskAlternate
-                        | Quartz.kCGEventFlagMaskControl
-                    )
-                    if keycode == _KEY_R and modifier_only == _CMD_SHIFT_MASK:
-                        threading.Thread(target=self.toggle, daemon=True).start()
-                return event
-
-            event_mask = Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown)
-            tap = Quartz.CGEventTapCreate(
-                Quartz.kCGSessionEventTap,
-                Quartz.kCGHeadInsertEventTap,
-                Quartz.kCGEventTapOptionListenOnly,
-                event_mask,
-                _tap_callback,
-                None,
-            )
-
-            if tap is None:
-                sys.stderr.write(
-                    "WARNING: Could not create global hotkey (Cmd+Shift+R).\n"
-                    "Grant Accessibility permission in:\n"
-                    "  System Settings > Privacy & Security > Accessibility\n\n"
-                )
-                return
-
-            run_loop_source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
-            Quartz.CFRunLoopAddSource(
-                Quartz.CFRunLoopGetCurrent(),
-                run_loop_source,
-                Quartz.kCFRunLoopDefaultMode,
-            )
-            Quartz.CGEventTapEnable(tap, True)
-
         except ImportError:
             sys.stderr.write(
                 "WARNING: PyObjC Quartz framework not available. "
                 "Global hotkey (Cmd+Shift+R) disabled.\n"
                 "Install with: pip install pyobjc-framework-Quartz\n\n"
             )
+            return
+
+        cmd_shift_mask = (
+            Quartz.kCGEventFlagMaskCommand | Quartz.kCGEventFlagMaskShift
+        )
+        key_r = 15
+
+        def _tap_callback(proxy: int, event_type: int, event: object, refcon: object) -> object:
+            if event_type == Quartz.kCGEventKeyDown:
+                keycode = Quartz.CGEventGetIntegerValueField(
+                    event, Quartz.kCGKeyboardEventKeycode,
+                )
+                flags = Quartz.CGEventGetFlags(event)
+                modifier_only = flags & (
+                    Quartz.kCGEventFlagMaskCommand
+                    | Quartz.kCGEventFlagMaskShift
+                    | Quartz.kCGEventFlagMaskAlternate
+                    | Quartz.kCGEventFlagMaskControl
+                )
+                if keycode == key_r and modifier_only == cmd_shift_mask:
+                    threading.Thread(target=self._toggle, daemon=True).start()
+            return event
+
+        event_mask = Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown)
+        tap = Quartz.CGEventTapCreate(
+            Quartz.kCGSessionEventTap,
+            Quartz.kCGHeadInsertEventTap,
+            Quartz.kCGEventTapOptionListenOnly,
+            event_mask,
+            _tap_callback,
+            None,
+        )
+
+        if tap is None:
+            sys.stderr.write(
+                "WARNING: Could not create global hotkey (Cmd+Shift+R).\n"
+                "Grant Accessibility permission in:\n"
+                "  System Settings > Privacy & Security > Accessibility\n\n"
+            )
+            return
+
+        run_loop_source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
+        Quartz.CFRunLoopAddSource(
+            Quartz.CFRunLoopGetCurrent(),
+            run_loop_source,
+            Quartz.kCFRunLoopDefaultMode,
+        )
+        Quartz.CGEventTapEnable(tap, True)
         # end _setup_global_hotkey
 
     # -- Lifecycle -----------------------------------------------------------
@@ -395,15 +239,19 @@ class MacMenubarDaemon:
 
         from mac_overlay import Overlay
 
-        self._model = model
-        self._language = language
-        self._domain_hint = domain_hint
-        self._custom_terms = custom_terms
-        self._running = True
         self._overlay = Overlay()
 
-        _ensure_cache_dir()
-        _PID_PATH.write_text(str(os.getpid()))
+        ensure_cache_dir()
+        PID_PATH.write_text(str(os.getpid()))
+
+        hooks = MacMenubarHooks(self)
+        self._core = DaemonCore(
+            model_name=model,
+            language=language,
+            domain_hint=domain_hint,
+            custom_terms=custom_terms,
+            hooks=hooks,
+        )
 
         self._app = NSApplication.sharedApplication()
 
@@ -434,15 +282,27 @@ class MacMenubarDaemon:
 
         _register_toggle_action(self)
 
-        self._start_socket_server()
+        self._socket_server = SocketServer(
+            on_toggle=self._toggle,
+            on_status=self._core.get_state,
+        )
+        self._socket_server.start()
+
         self._setup_global_hotkey()
 
+        # Warm the Whisper model so the first hotkey press is instant.
+        preload_model_async(model)
+
+        # Show the recording overlay only when entering RECORDING state. The
+        # initial state is IDLE so the overlay stays hidden until the first
+        # toggle.
         try:
             AppHelper.runEventLoop()
         finally:
-            self._running = False
-            if _PID_PATH.exists():
-                _PID_PATH.unlink()
+            if self._socket_server is not None:
+                self._socket_server.stop()
+            if PID_PATH.exists():
+                PID_PATH.unlink()
         # end run
 
 
@@ -452,12 +312,11 @@ class MacMenubarDaemon:
 
 def _register_toggle_action(daemon: MacMenubarDaemon) -> None:
     """Register a Python-backed Obj-C selector for the toggle menu item."""
-    import objc
     from Foundation import NSObject
 
     class ToggleDelegate(NSObject):
         def toggleRecording_(self, sender: object) -> None:
-            threading.Thread(target=daemon.toggle, daemon=True).start()
+            threading.Thread(target=daemon._toggle, daemon=True).start()
 
     delegate = ToggleDelegate.alloc().init()
     daemon._toggle_menu_item.setTarget_(delegate)
@@ -471,7 +330,7 @@ def _register_toggle_action(daemon: MacMenubarDaemon) -> None:
 
 
 def cmd_toggle() -> None:
-    response = _send_command("toggle")
+    response = send_command("toggle")
     if response is None:
         print("ERROR: voice-transcriber daemon is not running.", file=sys.stderr)
         print("Start it with: voice-transcriber-tray (macOS)", file=sys.stderr)
@@ -480,7 +339,7 @@ def cmd_toggle() -> None:
 
 
 def cmd_status() -> None:
-    response = _send_command("status")
+    response = send_command("status")
     print("not running" if response is None else response)
     # end cmd_status
 
@@ -526,8 +385,6 @@ def main() -> None:
     elif args.command == "status":
         cmd_status()
     else:
-        from voice_transcriber.config import load_config
-
         config = load_config()
         model = args.model if args.model is not None else config.default_model
         language = args.language if args.language is not None else config.default_language
