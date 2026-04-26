@@ -102,8 +102,11 @@ class MacMenubarHooks(RecordingHooks):
         # end on_result
 
     def on_empty(self) -> None:
+        # Use dismiss() rather than show_result(): show_result renders the
+        # "Copied to clipboard" success chrome, which would falsely claim a
+        # copy happened when no audio was captured.
         if self._daemon._overlay is not None:
-            self._daemon._overlay.show_result("(no speech detected)")
+            self._daemon._overlay.dismiss()
         # end on_empty
 
     def on_error(self, summary: str) -> None:

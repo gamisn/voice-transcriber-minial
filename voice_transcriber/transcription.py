@@ -15,7 +15,12 @@ import numpy as np
 
 
 _model_cache: dict[str, object] = {}
+# _cache_lock guards _model_cache and _load_locks. _load_locks holds one
+# threading.Lock per model_name so concurrent callers (preload_model_async
+# vs the first user toggle) collapse into a single load instead of racing
+# and loading the same Whisper model twice.
 _cache_lock = threading.Lock()
+_load_locks: dict[str, threading.Lock] = {}
 
 
 def import_whisper():
@@ -51,22 +56,33 @@ def transcribe_audio(
 
     with _cache_lock:
         cached = _model_cache.get(model_name)
+        load_lock = _load_locks.setdefault(model_name, threading.Lock())
 
     if cached is not None:
         model = cached
         if not quiet:
             sys.stderr.write(f"Model '{model_name}' (cached)\n")
     else:
-        if quiet:
-            model = whisper.load_model(model_name)
-        else:
-            spinner = _Spinner(f"Loading Whisper model '{model_name}'")
-            spinner.start()
-            model = whisper.load_model(model_name)
-            spinner.stop(f"Model '{model_name}' loaded")
+        # Single-flight: only one thread loads a given model_name at a time;
+        # the second waiter sees the cached result on the recheck below.
+        with load_lock:
+            with _cache_lock:
+                cached = _model_cache.get(model_name)
+            if cached is not None:
+                model = cached
+                if not quiet:
+                    sys.stderr.write(f"Model '{model_name}' (cached)\n")
+            else:
+                if quiet:
+                    model = whisper.load_model(model_name)
+                else:
+                    spinner = _Spinner(f"Loading Whisper model '{model_name}'")
+                    spinner.start()
+                    model = whisper.load_model(model_name)
+                    spinner.stop(f"Model '{model_name}' loaded")
 
-        with _cache_lock:
-            _model_cache[model_name] = model
+                with _cache_lock:
+                    _model_cache[model_name] = model
 
     audio_f32: np.ndarray = audio.astype(np.float32) / 32768.0
 

@@ -9,15 +9,22 @@ module. It owns:
   (``RecordingSession``), with hooks for UI callbacks.
 - A small ``preload_model`` helper so the daemon can warm up Whisper at
   startup instead of paying the load cost on the first hotkey press.
+
+Trust model: the unix socket is restricted to the same Unix user, local
+session only. There is no authentication on the wire — the file-mode 0600
+on the socket is the only access control.
 """
 
 from __future__ import annotations
 
+import os
 import pathlib
 import socket
 import threading
 from enum import Enum, auto
-from typing import Callable, Optional
+from typing import Callable, Optional, Protocol
+
+import numpy as np
 
 from .clipboard import copy_to_clipboard
 from .errors import log_recording_failure
@@ -87,6 +94,9 @@ class SocketServer:
 
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.bind(str(SOCK_PATH))
+        # Restrict to owner-only RW so other local users cannot send
+        # toggle/status even on hosts where ~/.cache is world-traversable.
+        os.chmod(SOCK_PATH, 0o600)
         server.listen(5)
         server.settimeout(1.0)
         self._server = server
@@ -140,12 +150,16 @@ class SocketServer:
         # end _handle_client
 
 
-class RecordingHooks:
+class RecordingHooks(Protocol):
     """UI callbacks invoked by ``RecordingSession`` at each pipeline stage.
 
-    All hooks are optional. They run on the recording worker thread, so
-    implementations must be thread-safe (typically by scheduling work onto
-    the GTK / AppKit main loop).
+    Implementations must define every method — using a ``Protocol`` instead
+    of a concrete base class means a forgotten method fails at type-check
+    time rather than silently no-op'ing in production.
+
+    Hooks run on the recording worker thread, so implementations must be
+    thread-safe (typically by scheduling work onto the GTK / AppKit main
+    loop).
     """
 
     def on_state_change(self, state: State) -> None: ...
@@ -373,7 +387,6 @@ def preload_model_async(model_name: str) -> threading.Thread:
     """
     def _worker() -> None:
         try:
-            import numpy as np
             silent = np.zeros(16_000, dtype=np.int16)
             transcribe_audio(silent, model_name=model_name, language="en", quiet=True)
         except Exception as exc:

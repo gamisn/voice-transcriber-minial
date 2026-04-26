@@ -8,6 +8,7 @@ surfaced via notifications or overlays.
 from __future__ import annotations
 
 import pathlib
+import sys
 import traceback
 from datetime import datetime, timezone
 
@@ -46,10 +47,20 @@ def log_recording_failure(stage: str, exc: BaseException) -> str:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         with _ERROR_LOG.open("a", encoding="utf-8") as fh:
             fh.write(f"\n[{timestamp}] stage={stage} {summary}\n{tb}\n")
-    except OSError:
-        # Logging must never mask the original error path. If we cannot
-        # write to disk we silently fall back to the in-memory summary.
-        pass
+    except OSError as log_exc:
+        # Read-only home, full disk, or similar. Logging must never mask the
+        # original error path, but staying entirely silent loses the
+        # traceback. Fall back to stderr so a developer can still see what
+        # happened.
+        try:
+            print(
+                f"voice-transcriber: could not write error log "
+                f"({type(log_exc).__name__}: {log_exc}); "
+                f"stage={stage} {summary}\n{tb}",
+                file=sys.stderr,
+            )
+        except OSError:
+            pass
 
     return f"{stage}: {summary}"
     # end log_recording_failure

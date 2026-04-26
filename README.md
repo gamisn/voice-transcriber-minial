@@ -269,22 +269,30 @@ The codebase is structured as a shared Python package (`voice_transcriber/`) wit
 
 ```
 voice_transcriber/          Shared core
+  daemon.py                 Platform-agnostic daemon core: state machine,
+                            unix socket, recording session, model preload
   recorder.py               Audio capture (sounddevice)
   transcription.py          Whisper model loading and transcription
   pipeline.py               Post-processing: domain detection -> glossary -> normalisation
   domain.py                 Domain detection and glossary correction
+  glossaries/*.json         Data-driven domain glossaries (technical, ...)
   formatter.py              Text normalisation
+  errors.py                 Typed errors + traceback logging to ~/.cache/voice-transcriber/error.log
   config.py                 Config load/save (~/.config/voice-transcriber/config.json)
   clipboard.py              Cross-platform clipboard (Linux/macOS/Windows)
   models.py                 Data models
+  rewriter.py               Style-aware AI rewriter — interface sketch only
 
-transcriber.py              CLI entry point (~130 lines)
-tray.py                     Linux tray daemon — GTK/AppIndicator (~490 lines)
-mac_menubar.py              macOS menubar daemon — PyObjC/NSStatusItem (~530 lines)
+transcriber.py              CLI entry point (~160 lines)
+tray.py                     Linux tray daemon — GTK/AppIndicator (~510 lines)
+mac_menubar.py              macOS menubar daemon — PyObjC/NSStatusItem (~410 lines)
 build_mac_app.sh            Builds Voice Transcriber.app bundle for macOS
 ```
 
-All three entry points use the same pipeline. Adding a new platform means writing only the UI shell.
+Both daemons (`tray.py`, `mac_menubar.py`) are thin UI shells around
+`voice_transcriber/daemon.py`: they implement a `RecordingHooks` Protocol
+and let the shared core run the record -> transcribe -> pipeline ->
+clipboard flow. Adding a new platform means writing only the UI shell.
 
 ## Troubleshooting
 
