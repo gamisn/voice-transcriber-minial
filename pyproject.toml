@@ -20,3 +20,16 @@ macos = [
 dev = [
     "pytest>=9.0.2",
 ]
+
+[tool.setuptools]
+packages = ["voice_transcriber"]
+
+[tool.setuptools.package-data]
+voice_transcriber = ["glossaries/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::FutureWarning:torch",
+    "ignore::UserWarning:whisper",
+]

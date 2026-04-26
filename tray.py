@@ -22,33 +22,54 @@ import argparse
 import os
 import pathlib
 import signal
-import socket
 import subprocess
 import sys
 import threading
-from enum import Enum, auto
 from typing import Callable, Optional
 
 
+def _ensure_venv_imports_on_path() -> None:
+    """Prepend the project venv's site-packages so the shared package is
+    importable when ``tray.py`` is invoked under system python3."""
+    here = pathlib.Path(__file__).parent
+    venv_lib = here / ".venv" / "lib"
+    if venv_lib.exists():
+        for pydir in venv_lib.iterdir():
+            site = pydir / "site-packages"
+            if site.exists() and str(site) not in sys.path:
+                sys.path.insert(0, str(site))
+                break
+    if str(here) not in sys.path:
+        sys.path.insert(0, str(here))
+    # end _ensure_venv_imports_on_path
+
+
+_ensure_venv_imports_on_path()
+
+from voice_transcriber.config import load_config
+from voice_transcriber.daemon import (
+    CACHE_DIR,
+    PID_PATH,
+    DaemonCore,
+    RecordingHooks,
+    SocketServer,
+    State,
+    ensure_cache_dir,
+    preload_model_async,
+    send_command,
+)
+
+
 # ---------------------------------------------------------------------------
-# Runtime paths
+# Runtime paths (icons live alongside the shared cache dir)
 # ---------------------------------------------------------------------------
 
-_CACHE_DIR = pathlib.Path.home() / ".cache" / "voice-transcriber"
-_ICON_DIR = _CACHE_DIR / "icons"
-_SOCK_PATH = _CACHE_DIR / "tray.sock"
-_PID_PATH = _CACHE_DIR / "tray.pid"
+_ICON_DIR = CACHE_DIR / "icons"
+
 
 # ---------------------------------------------------------------------------
-# State
+# State -> UI mapping
 # ---------------------------------------------------------------------------
-
-
-class State(Enum):
-    IDLE = auto()
-    RECORDING = auto()
-    TRANSCRIBING = auto()
-
 
 _STATE_UI = {
     State.IDLE:         ("Mic: ready — click to record", "vt-idle"),
@@ -112,30 +133,6 @@ def _notify(title: str, body: str) -> None:
     except FileNotFoundError:
         pass
     # end _notify
-
-
-# ---------------------------------------------------------------------------
-# Unix socket helpers
-# ---------------------------------------------------------------------------
-
-
-def _ensure_cache_dir() -> None:
-    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _send_command(command: str) -> Optional[str]:
-    """Send a command to the running daemon and return its response."""
-    if not _SOCK_PATH.exists():
-        return None
-    try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(3.0)
-            sock.connect(str(_SOCK_PATH))
-            sock.sendall((command + "\n").encode())
-            return sock.recv(256).decode().strip()
-    except (ConnectionRefusedError, OSError):
-        return None
-    # end _send_command
 
 
 # ---------------------------------------------------------------------------
@@ -303,219 +300,93 @@ class PanelIndicator:
         filled = min(int(normalised * _METER_WIDTH), _METER_WIDTH)
         bar = "|" * filled + "." * (_METER_WIDTH - filled)
         self._level_text = f"Rec [{bar}]"
+
+    def hide_overlay(self) -> None:
+        """Force the recording overlay off-screen (used after an error)."""
+        try:
+            self._GLib.idle_add(self._overlay.hide)
+        except AttributeError:
+            self._overlay.hide()
     # end PanelIndicator
 
 
 # ---------------------------------------------------------------------------
-# Tray daemon
+# Tray daemon shell
 # ---------------------------------------------------------------------------
 
 
+class TrayHooks(RecordingHooks):
+    """Routes ``DaemonCore`` events to the panel indicator and notifications."""
+
+    def __init__(self, indicator_getter: Callable[[], Optional[PanelIndicator]]) -> None:
+        self._indicator_getter = indicator_getter
+        # end __init__
+
+    def on_state_change(self, state: State) -> None:
+        indicator = self._indicator_getter()
+        if indicator is not None:
+            indicator.set_state(state)
+        # end on_state_change
+
+    def on_level(self, normalized: float) -> None:
+        indicator = self._indicator_getter()
+        if indicator is not None:
+            indicator.set_level(normalized)
+        # end on_level
+
+    def on_result(self, final_text: str) -> None:
+        threading.Thread(
+            target=_notify,
+            args=("Voice Transcriber", final_text),
+            daemon=True,
+        ).start()
+        # end on_result
+
+    def on_empty(self) -> None:
+        threading.Thread(
+            target=_notify,
+            args=("Voice Transcriber", "Transcription was empty."),
+            daemon=True,
+        ).start()
+        # end on_empty
+
+    def on_error(self, summary: str) -> None:
+        indicator = self._indicator_getter()
+        if indicator is not None:
+            indicator.hide_overlay()
+        threading.Thread(
+            target=_notify,
+            args=(
+                "Voice Transcriber - Error",
+                f"{summary}\nSee ~/.cache/voice-transcriber/error.log for details.",
+            ),
+            daemon=True,
+        ).start()
+        # end on_error
+
+
 class TrayDaemon:
-    """Background daemon that owns the recording lifecycle and panel indicator."""
+    """GTK shell around ``DaemonCore``. Owns only the panel indicator + GTK loop."""
 
     def __init__(self) -> None:
-        self._model: str = "base"
-        self._language: str = "en"
-        self._domain_hint: str = "auto"
-        self._custom_terms: list[str] = []
-        self._state = State.IDLE
-        self._state_lock = threading.Lock()
-        self._stop_recording_event: Optional[threading.Event] = None
-        self._work_thread: Optional[threading.Thread] = None
-        self._server_thread: Optional[threading.Thread] = None
         self._indicator: Optional[PanelIndicator] = None
-        self._running = False
-        self._sd: Optional[object] = None
+        self._core: Optional[DaemonCore] = None
+        self._socket_server: Optional[SocketServer] = None
+        # end __init__
 
-    # -- State management ----------------------------------------------------
-
-    def _set_state(self, state: State) -> None:
-        with self._state_lock:
-            self._state = state
-        if self._indicator is not None:
-            self._indicator.set_state(state)
-
-    def _get_state(self) -> State:
-        with self._state_lock:
-            return self._state
-
-    # -- Toggle logic --------------------------------------------------------
-
-    def toggle(self) -> None:
-        state = self._get_state()
-        if state == State.IDLE:
-            self._start_recording()
-        elif state == State.RECORDING:
-            self._stop_recording()
-
-    def _start_recording(self) -> None:
-        if self._get_state() != State.IDLE:
-            return
-        self._set_state(State.RECORDING)
-        self._stop_recording_event = threading.Event()
-        self._work_thread = threading.Thread(
-            target=self._recording_worker,
-            args=(self._stop_recording_event,),
-            daemon=True,
-        )
-        self._work_thread.start()
-
-    def _stop_recording(self) -> None:
-        if self._get_state() != State.RECORDING:
-            return
-        if self._stop_recording_event is not None:
-            self._stop_recording_event.set()
-
-    def _recording_worker(self, stop_event: threading.Event) -> None:
-        """Background thread: record -> transcribe -> pipeline -> clipboard -> notify."""
-        try:
-            from voice_transcriber.clipboard import copy_to_clipboard
-            from voice_transcriber.models import ProcessingOptions
-            from voice_transcriber.pipeline import process_transcript
-            from voice_transcriber.recorder import import_sounddevice, record_audio
-            from voice_transcriber.transcription import transcribe_audio
-
-            if self._sd is None:
-                self._sd = import_sounddevice()
-
-            def _on_level(normalised: float) -> None:
-                if self._indicator is not None and self._get_state() == State.RECORDING:
-                    self._indicator.set_level(normalised)
-
-            audio = record_audio(
-                self._sd,
-                stop_event=stop_event,
-                interactive=False,
-                on_level=_on_level,
-            )
-
-            if audio is None:
-                self._set_state(State.IDLE)
-                threading.Thread(
-                    target=_notify,
-                    args=("Voice Transcriber", "No audio captured."),
-                    daemon=True,
-                ).start()
-                return
-
-            self._set_state(State.TRANSCRIBING)
-
-            raw_text = transcribe_audio(
-                audio,
-                model_name=self._model,
-                language=self._language,
-                quiet=True,
-            )
-
-            result = process_transcript(
-                raw_transcript=raw_text,
-                options=ProcessingOptions(
-                    language=self._language,
-                    domain_hint=self._domain_hint,
-                    custom_terms=self._custom_terms,
-                ),
-            )
-
-            if result.final_output:
-                copy_to_clipboard(result.final_output)
-            self._set_state(State.IDLE)
-
-            msg = result.final_output if result.final_output else "Transcription was empty."
-            threading.Thread(
-                target=_notify,
-                args=("Voice Transcriber", msg),
-                daemon=True,
-            ).start()
-
-        except Exception as exc:
-            self._set_state(State.IDLE)
-            threading.Thread(
-                target=_notify,
-                args=("Voice Transcriber - Error", str(exc)),
-                daemon=True,
-            ).start()
-        # end _recording_worker
-
-    def _ensure_venv_imports(self) -> None:
-        """Inject the venv's site-packages so the shared package is importable
-        when tray.py runs under system python3."""
-        if getattr(self, "_venv_injected", False):
-            return
-        here = pathlib.Path(__file__).parent
-        venv_lib = here / ".venv" / "lib"
-        if venv_lib.exists():
-            for pydir in venv_lib.iterdir():
-                site = pydir / "site-packages"
-                if site.exists() and str(site) not in sys.path:
-                    sys.path.insert(0, str(site))
-                    break
-        if str(here) not in sys.path:
-            sys.path.insert(0, str(here))
-        self._venv_injected = True
-        # end _ensure_venv_imports
-
-    # -- Unix socket server --------------------------------------------------
-
-    def _start_socket_server(self) -> None:
-        _ensure_cache_dir()
-        if _SOCK_PATH.exists():
-            _SOCK_PATH.unlink()
-
-        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server.bind(str(_SOCK_PATH))
-        server.listen(5)
-        server.settimeout(1.0)
-
-        def _serve() -> None:
-            while self._running:
-                try:
-                    conn, _ = server.accept()
-                    threading.Thread(
-                        target=self._handle_client,
-                        args=(conn,),
-                        daemon=True,
-                    ).start()
-                except socket.timeout:
-                    continue
-                except OSError:
-                    break
-            server.close()
-            if _SOCK_PATH.exists():
-                _SOCK_PATH.unlink()
-        # end _serve
-
-        self._server_thread = threading.Thread(target=_serve, daemon=True)
-        self._server_thread.start()
-
-    def _handle_client(self, conn: socket.socket) -> None:
-        try:
-            data = conn.recv(64).decode().strip()
-            if data == "toggle":
-                self.toggle()
-                conn.sendall(b"ok\n")
-            elif data == "status":
-                conn.sendall((self._get_state().name.lower() + "\n").encode())
-            else:
-                conn.sendall(b"unknown\n")
-        except OSError:
-            pass
-        finally:
-            conn.close()
-        # end _handle_client
-
-    # -- SIGUSR1 signal handler ----------------------------------------------
+    def _toggle(self) -> None:
+        if self._core is not None:
+            self._core.toggle()
+        # end _toggle
 
     def _setup_signal_handler(self) -> None:
         def _handler(signum: int, frame: object) -> None:
-            threading.Thread(target=self.toggle, daemon=True).start()
-
+            threading.Thread(target=self._toggle, daemon=True).start()
         try:
             signal.signal(signal.SIGUSR1, _handler)
         except (OSError, ValueError):
             pass
-
-    # -- Lifecycle -----------------------------------------------------------
+        # end _setup_signal_handler
 
     def run(self, model: str, language: str, domain_hint: str, custom_terms: list[str]) -> None:
         """Start the daemon. Blocks until the user quits."""
@@ -523,28 +394,38 @@ class TrayDaemon:
         gi.require_version("Gtk", "3.0")
         from gi.repository import Gtk
 
-        self._model = model
-        self._language = language
-        self._domain_hint = domain_hint
-        self._custom_terms = custom_terms
-        self._running = True
+        ensure_cache_dir()
+        PID_PATH.write_text(str(os.getpid()))
 
-        self._ensure_venv_imports()
-
-        _ensure_cache_dir()
-        _PID_PATH.write_text(str(os.getpid()))
+        hooks = TrayHooks(indicator_getter=lambda: self._indicator)
+        self._core = DaemonCore(
+            model_name=model,
+            language=language,
+            domain_hint=domain_hint,
+            custom_terms=custom_terms,
+            hooks=hooks,
+        )
 
         self._setup_signal_handler()
-        self._start_socket_server()
 
-        self._indicator = PanelIndicator(on_toggle_callback=self.toggle)
+        self._socket_server = SocketServer(
+            on_toggle=self._toggle,
+            on_status=self._core.get_state,
+        )
+        self._socket_server.start()
+
+        # Warm the Whisper model so the first hotkey press is instant.
+        preload_model_async(model)
+
+        self._indicator = PanelIndicator(on_toggle_callback=self._toggle)
 
         try:
             Gtk.main()
         finally:
-            self._running = False
-            if _PID_PATH.exists():
-                _PID_PATH.unlink()
+            if self._socket_server is not None:
+                self._socket_server.stop()
+            if PID_PATH.exists():
+                PID_PATH.unlink()
         # end run
 
 
@@ -554,7 +435,7 @@ class TrayDaemon:
 
 
 def cmd_toggle() -> None:
-    response = _send_command("toggle")
+    response = send_command("toggle")
     if response is None:
         print("ERROR: voice-transcriber daemon is not running.", file=sys.stderr)
         print("Start it with: voice-transcriber-tray", file=sys.stderr)
@@ -563,7 +444,7 @@ def cmd_toggle() -> None:
 
 
 def cmd_status() -> None:
-    response = _send_command("status")
+    response = send_command("status")
     print("not running" if response is None else response)
     # end cmd_status
 
@@ -609,8 +490,6 @@ def main() -> None:
     elif args.command == "status":
         cmd_status()
     else:
-        from voice_transcriber.config import load_config
-
         config = load_config()
         model = args.model if args.model is not None else config.default_model
         language = args.language if args.language is not None else config.default_language
