@@ -20,6 +20,9 @@ class AppConfig:
 
     # Phase 1: Context Bridge
     context_enabled: bool = True
+
+    # Phase 2: Dynamic Glossaries
+    auto_glossary: bool = True
     # end AppConfig
 
 
@@ -39,6 +42,7 @@ def load_config() -> AppConfig:
         domain_hint=str(payload.get("domain_hint", "auto")),
         custom_terms=_normalize_terms(payload.get("custom_terms", [])),
         context_enabled=bool(payload.get("context_enabled", True)),
+        auto_glossary=bool(payload.get("auto_glossary", True)),
     )
     # end load_config
 

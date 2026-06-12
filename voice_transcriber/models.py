@@ -24,10 +24,10 @@ class ProcessingOptions:
     language: str
     domain_hint: str = "auto"
     custom_terms: list[str] = field(default_factory=list)
+    context: "UserContext | None" = None
 
-    # Optional user context used to bias domain detection and glossary
-    # selection toward the topics the user is currently working on.
-    context: Optional["UserContext"] = None
+    # Phase 2: Dynamic Glossaries
+    auto_glossary: bool = True
     # end ProcessingOptions
 
 

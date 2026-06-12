@@ -4,6 +4,7 @@ from voice_transcriber.context import load_user_context
 from voice_transcriber.domain import apply_glossary, detect_domain
 from voice_transcriber.formatter import normalize_transcript
 from voice_transcriber.models import ProcessingOptions, TranscriptionResult
+from voice_transcriber import observer as observer_module
 
 
 def process_transcript(
@@ -13,6 +14,8 @@ def process_transcript(
     """Post-process a raw Whisper transcript through the shared pipeline.
 
     Pipeline: domain detection -> glossary correction -> normalization.
+    After completion, the observer logs the result and optionally proposes
+    new glossary entries.
     """
     warnings: list[str] = []
     if not raw_transcript.strip():
@@ -25,7 +28,7 @@ def process_transcript(
     )
     final_output = normalize_transcript(corrected)
 
-    return TranscriptionResult(
+    result = TranscriptionResult(
         raw_transcript=raw_transcript,
         corrected_transcript=corrected,
         final_output=final_output,
@@ -34,4 +37,16 @@ def process_transcript(
         applied_terms=applied_terms,
         warnings=warnings,
     )
+
+    # Phase 2: log to history and propose new glossary entries
+    observer_module.observe(
+        raw=raw_transcript,
+        corrected=corrected,
+        domain=domain.domain_id if domain.confidence > 0 else None,
+        confidence=domain.confidence,
+        applied_terms=applied_terms,
+        auto_glossary=options.auto_glossary,
+    )
+
+    return result
     # end process_transcript

@@ -89,6 +89,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Input device index (see --list-devices). Uses system default if omitted.",
     )
     p.add_argument(
+        "--review",
+        action="store_true",
+        help="Review and approve pending glossary entries.",
+    )
+    p.add_argument(
         "--clipboard",
         action="store_true",
         help="Copy transcription to clipboard.",
@@ -99,6 +104,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = _build_parser().parse_args()
+
+    if args.review:
+        from voice_transcriber.reviewer import main as review_main
+        sys.exit(review_main())
+
     config = load_config()
 
     model = args.model if args.model is not None else config.default_model
