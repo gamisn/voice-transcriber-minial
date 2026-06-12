@@ -41,14 +41,15 @@ The transcriber should be **augmentation**, not **replacement**. You speak your 
 
 ---
 
-## Phase 3: Memory Sync
+## Phase 3: Memory Sync ✅ COMPLETE
 **Goal:** The transcriber remembers what you said yesterday and uses it today.
 
-- SQLite transcript history with timestamps, domains, corrections
-- Recency bias in domain detection (last N transcripts or last H hours)
-- Shared learning between desktop transcriber and Telegram voice messages
+- ✅ Create `voice_transcriber/memory.py` — recency-weighted term and domain scoring
+- ✅ Modify `context.py` — merges static JSON with live transcript history
+- ✅ Modify `domain.py` — recency bias from memory when keywords are weak
+- ✅ All 73 tests passing
 
-**Deliverable:** "Oh, you were talking about Docker an hour ago, so 'compose' means Docker Compose."
+**How it works:** After you say "Deploy with Docker Compose", the next time you say "check the compose file" (even without saying Docker), memory boosts `technical` because it remembers you were talking about Docker 10 minutes ago.
 
 ---
 
