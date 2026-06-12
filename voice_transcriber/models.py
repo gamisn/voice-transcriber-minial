@@ -28,6 +28,9 @@ class ProcessingOptions:
 
     # Phase 2: Dynamic Glossaries
     auto_glossary: bool = True
+
+    # Phase 4: Style Learning
+    style_enabled: bool = True
     # end ProcessingOptions
 
 

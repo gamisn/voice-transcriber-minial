@@ -94,6 +94,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Review and approve pending glossary entries.",
     )
     p.add_argument(
+        "--learn-style",
+        action="store_true",
+        dest="learn_style",
+        help="Analyze writing samples and build a style profile.",
+    )
+    p.add_argument(
         "--clipboard",
         action="store_true",
         help="Copy transcription to clipboard.",
@@ -108,6 +114,10 @@ def main() -> None:
     if args.review:
         from voice_transcriber.reviewer import main as review_main
         sys.exit(review_main())
+
+    if args.learn_style:
+        from voice_transcriber.style_corpus import interactive_learn
+        sys.exit(interactive_learn())
 
     config = load_config()
 

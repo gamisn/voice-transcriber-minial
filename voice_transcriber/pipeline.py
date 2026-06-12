@@ -5,6 +5,9 @@ from voice_transcriber.domain import apply_glossary, detect_domain
 from voice_transcriber.formatter import normalize_transcript
 from voice_transcriber.models import ProcessingOptions, TranscriptionResult
 from voice_transcriber import observer as observer_module
+from voice_transcriber.style import load_style_profile
+from voice_transcriber.style_formatter import apply_style
+
 
 
 def process_transcript(
@@ -27,6 +30,13 @@ def process_transcript(
         raw_transcript, domain, options.custom_terms,
     )
     final_output = normalize_transcript(corrected)
+
+    # Phase 4: Style Learning — adapt to user's writing style
+    if options.style_enabled:
+        style_profile = load_style_profile()
+        if style_profile is not None:
+            final_output = apply_style(final_output, style_profile)
+
 
     result = TranscriptionResult(
         raw_transcript=raw_transcript,
