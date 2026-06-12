@@ -25,13 +25,17 @@ The transcriber should be **augmentation**, not **replacement**. You speak your 
 
 ---
 
-## Phase 2: Dynamic Glossaries
+## Phase 2: Dynamic Glossaries ✅ COMPLETE
 **Goal:** Stop writing JSON by hand. The system observes your speech and generates glossaries automatically.
 
-- Glossary observer agent that watches transcripts and extracts candidate terms
-- Compare raw Whisper output vs. corrected output to find mishearings
-- Write candidates to a pending file for user review
-- Seed with known user domains (C#, savadeck, Hermes tooling)
+- ✅ Create `voice_transcriber/history.py` — SQLite transcript history + pending glossary entries
+- ✅ Create `voice_transcriber/observer.py` — pipeline hook that logs and proposes terms
+- ✅ Create `voice_transcriber/term_classifier.py` — heuristic alias extraction with similarity scoring
+- ✅ Create `voice_transcriber/reviewer.py` — interactive CLI for approving/rejecting candidates
+- ✅ Add `--review` flag to `transcriber.py`
+- ✅ Modify `pipeline.py` to call observer after every transcription
+- ✅ Modify `config.py` to add `auto_glossary` toggle
+- ✅ All 66 tests passing
 
 **Deliverable:** Auto-growing glossaries that learn your vocabulary.
 

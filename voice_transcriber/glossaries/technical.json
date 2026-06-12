@@ -157,6 +157,12 @@
         "type script",
         "typescript"
       ]
+    },
+    {
+      "canonical": "kube-config-parser",
+      "aliases": [
+        "kube config parser"
+      ]
     }
   ]
 }
