@@ -14,6 +14,7 @@ import pathlib
 import re
 from dataclasses import dataclass
 
+from voice_transcriber import context as context_module
 from .models import DomainMatch
 
 
@@ -92,11 +93,21 @@ def available_domains() -> list[str]:
     # end available_domains
 
 
-def detect_domain(text: str, domain_hint: str) -> DomainMatch:
+def detect_domain(
+    text: str,
+    domain_hint: str,
+    context: "context_module.UserContext | None" = None,
+) -> DomainMatch:
     """Detect the speech domain from transcript content or an explicit hint.
 
     With ``domain_hint == "auto"`` we tally how many tokens in the transcript
-    appear in each glossary's ``keywords`` set and pick the highest match.
+    appear in each glossary's ``keywords`` set **and** in the aliases of its
+    ``entries``. This means a mangled technical term (e.g. "i space" for
+    ``IServiceScopeFactory``) can still trigger the correct domain.
+
+    When ``context`` is provided, we bias the scoring toward the user's
+    active domains and boost confidence for terms that appear in the
+    ``recent_terms`` list.
     """
     normalized = text.strip().lower()
 
@@ -110,18 +121,69 @@ def detect_domain(text: str, domain_hint: str) -> DomainMatch:
     glossaries = _load_glossaries()
     best_id: str = "general"
     best_matches: list[str] = []
+    best_score: float = 0.0
+
+    active_domains: set[str] = set()
+    recent_terms_set: set[str] = set()
+    if context is not None:
+        active_domains = {d.lower() for d in context.active_domains}
+        recent_terms_set = {t.lower() for t in context.recent_terms}
+
+    # Pre-build alias-to-domain index for fast lookup
+    alias_to_domain: dict[str, list[str]] = {}
     for glossary in glossaries.values():
-        matched = sorted({token for token in tokens if token in glossary.keywords})
-        if len(matched) > len(best_matches):
-            best_matches = matched
+        for entry in glossary.entries:
+            for alias in entry.aliases:
+                alias_key = alias.lower()
+                alias_to_domain.setdefault(alias_key, []).append(glossary.domain_id)
+            # Also index the canonical form
+            alias_to_domain.setdefault(entry.canonical.lower(), []).append(glossary.domain_id)
+
+    for glossary in glossaries.values():
+        # 1. Keyword matches
+        keyword_matched = sorted({token for token in tokens if token in glossary.keywords})
+        # 2. Alias matches (tokens that appear in any entry alias for this domain)
+        alias_matched = sorted({
+            token for token in tokens
+            if glossary.domain_id in alias_to_domain.get(token, [])
+        })
+        # 2b. Phrase-level scan for multi-word aliases
+        # (e.g. "i space" for IServiceScopeFactory, "as no tracking" for AsNoTracking)
+        for entry in glossary.entries:
+            for alias in entry.aliases:
+                if " " in alias and alias in normalized:
+                    alias_matched.append(alias)
+        alias_matched = sorted(set(alias_matched))
+
+        # Combine without duplicates
+        all_matched = sorted(set(keyword_matched) | set(alias_matched))
+        score = float(len(all_matched))
+
+        # Only apply bias when the transcript actually contains some matches.
+        # This prevents active domains from winning on completely generic text.
+        if len(all_matched) > 0:
+            # Bias: boost score if glossary domain is in user's active domains
+            if glossary.domain_id.lower() in active_domains:
+                score += 0.5
+
+            # Bias: boost score for matched tokens that are recent terms
+            score += sum(1 for token in all_matched if token in recent_terms_set)
+
+        if score > best_score:
+            best_score = score
+            best_matches = all_matched
             best_id = glossary.domain_id
 
-    if not best_matches:
+    if not best_matches and best_score == 0.0:
         return DomainMatch()
 
     confidence = min(0.35 + (len(best_matches) / max(len(tokens), 1)) * 3.2, 0.99)
     if len(best_matches) >= 2:
         confidence = max(confidence, 0.7)
+
+    # Boost confidence slightly when context helped us pick this domain
+    if best_id.lower() in active_domains:
+        confidence = min(confidence + 0.05, 0.99)
 
     return DomainMatch(
         domain_id=best_id,

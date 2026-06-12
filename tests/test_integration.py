@@ -95,25 +95,30 @@ class FullPipelineIntegrationTests(unittest.TestCase):
         self.assertIn("AWS Lambda", result.final_output)
         # end test_custom_terms_integrate_with_glossary
 
-    def test_whisper_style_mishearings_are_corrected(self) -> None:
+    def test_real_whisper_mishearings_from_user_voice(self) -> None:
+        """Regression for actual Whisper output observed during voice testing.
+
+        These inputs simulate what Whisper produced when the user spoke:
+        'Nginx, Microsoft, IServiceScopeFactory, Abstract, Class or Interface'.
+        """
         samples = [
-            ("we use cooper netties for orchestration", "Kubernetes"),
-            ("check the git hub repository", "GitHub"),
-            ("write it in type script", "TypeScript"),
-            ("the sequel database is down", "SQL"),
-            ("deploy with terra form", "Terraform"),
+            ("i have a problem with i space", "IServiceScopeFactory", "csharp"),
+            ("we use mgnx for reverse proxy", "Nginx", "technical"),
+            ("this is rackstract class", "Abstract", "csharp"),
+            ("implement the interphase", "Interface", "csharp"),
         ]
-        for raw, expected_term in samples:
+        for raw, expected_term, expected_domain in samples:
             with self.subTest(raw=raw):
                 result = process_transcript(
                     raw_transcript=raw,
                     options=ProcessingOptions(
                         language="en",
-                        domain_hint="technical",
+                        domain_hint="auto",
                     ),
                 )
+                self.assertEqual(result.detected_domain, expected_domain)
                 self.assertIn(expected_term, result.final_output)
-        # end test_whisper_style_mishearings_are_corrected
+        # end test_real_whisper_mishearings_from_user_voice
 
     def test_empty_and_whitespace_only_transcripts(self) -> None:
         for raw in ("", "   ", "\n\t"):

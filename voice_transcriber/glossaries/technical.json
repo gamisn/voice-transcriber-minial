@@ -42,6 +42,7 @@
     {"canonical": "GitHub", "aliases": ["git hub", "github"]},
     {"canonical": "Kubernetes", "aliases": ["kubernettes", "cooper netties", "kuber netes"]},
     {"canonical": "Linux", "aliases": ["linucks", "linix"]},
+    {"canonical": "Nginx", "aliases": ["engine x", "nginx", "mgnx", "mgmx", "injekcs", "enjinx"]},
     {"canonical": "PostgreSQL", "aliases": ["postgres q l", "postgre sequel", "postgres"]},
     {"canonical": "Python", "aliases": ["pie thon"]},
     {"canonical": "React", "aliases": ["re act"]},

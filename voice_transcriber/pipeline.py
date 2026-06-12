@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from .domain import apply_glossary, detect_domain
-from .formatter import normalize_transcript
-from .models import ProcessingOptions, TranscriptionResult
+from voice_transcriber.context import load_user_context
+from voice_transcriber.domain import apply_glossary, detect_domain
+from voice_transcriber.formatter import normalize_transcript
+from voice_transcriber.models import ProcessingOptions, TranscriptionResult
 
 
 def process_transcript(
@@ -17,7 +18,8 @@ def process_transcript(
     if not raw_transcript.strip():
         warnings.append("Transcription was empty.")
 
-    domain = detect_domain(raw_transcript, domain_hint=options.domain_hint)
+    ctx = options.context or load_user_context()
+    domain = detect_domain(raw_transcript, domain_hint=options.domain_hint, context=ctx)
     corrected, applied_terms = apply_glossary(
         raw_transcript, domain, options.custom_terms,
     )

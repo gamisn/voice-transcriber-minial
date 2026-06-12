@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from voice_transcriber.context import UserContext
 
 
 @dataclass(slots=True)
@@ -20,6 +24,10 @@ class ProcessingOptions:
     language: str
     domain_hint: str = "auto"
     custom_terms: list[str] = field(default_factory=list)
+
+    # Optional user context used to bias domain detection and glossary
+    # selection toward the topics the user is currently working on.
+    context: Optional["UserContext"] = None
     # end ProcessingOptions
 
 

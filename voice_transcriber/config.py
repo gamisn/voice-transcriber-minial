@@ -17,6 +17,9 @@ class AppConfig:
     default_language: str = "en"
     domain_hint: str = "auto"
     custom_terms: list[str] = field(default_factory=list)
+
+    # Phase 1: Context Bridge
+    context_enabled: bool = True
     # end AppConfig
 
 
@@ -35,6 +38,7 @@ def load_config() -> AppConfig:
         default_language=str(payload.get("default_language", "en")),
         domain_hint=str(payload.get("domain_hint", "auto")),
         custom_terms=_normalize_terms(payload.get("custom_terms", [])),
+        context_enabled=bool(payload.get("context_enabled", True)),
     )
     # end load_config
 

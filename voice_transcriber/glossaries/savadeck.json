@@ -1,0 +1,28 @@
+{
+  "domain_id": "savadeck",
+  "description": "Savadeck decking planner glossary: construction and geometry terms.",
+  "keywords": [
+    "board",
+    "clip",
+    "cutout",
+    "deck",
+    "decking",
+    "edge",
+    "fascia",
+    "joist",
+    "leveler",
+    "perimeter",
+    "planner",
+    "subconstruction",
+    "trim"
+  ],
+  "entries": [
+    {"canonical": "decking clip", "aliases": ["decking clip", "deck clip", "deckingclip"]},
+    {"canonical": "cutout", "aliases": ["cut out", "cutout", "cut-out"]},
+    {"canonical": "edge trim", "aliases": ["edge trim", "edge trimm", "edgetrim"]},
+    {"canonical": "fascia", "aliases": ["fascia", "fasha", "fasha board"]},
+    {"canonical": "fascia board", "aliases": ["fascia board", "fasha board", "fascia-board"]},
+    {"canonical": "subconstruction", "aliases": ["sub construction", "subconstruction", "sub-construction"]},
+    {"canonical": "leveler", "aliases": ["leveler", "leveller", "levelr"]}
+  ]
+}

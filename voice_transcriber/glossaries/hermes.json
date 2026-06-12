@@ -1,0 +1,27 @@
+{
+  "domain_id": "hermes",
+  "description": "Hermes agent ecosystem glossary: tools, commands, and concepts.",
+  "keywords": [
+    "agent",
+    "cronjob",
+    "delegate",
+    "honcho",
+    "hermes",
+    "memory",
+    "notion",
+    "search",
+    "session",
+    "skill",
+    "task",
+    "transcriber",
+    "workspace"
+  ],
+  "entries": [
+    {"canonical": "cronjob", "aliases": ["cron job", "cronjob", "cron-job", "crone job"]},
+    {"canonical": "delegate_task", "aliases": ["delegate task", "delegate_task", "delegate-task"]},
+    {"canonical": "Honcho", "aliases": ["honcho", "honko", "hon show"]},
+    {"canonical": "honcho_search", "aliases": ["honcho search", "honcho_search", "honcho-search"]},
+    {"canonical": "skill_view", "aliases": ["skill view", "skill_view", "skill-view", "skillview"]},
+    {"canonical": "Open WebUI", "aliases": ["open webui", "open web UI", "openwebui"]}
+  ]
+}
