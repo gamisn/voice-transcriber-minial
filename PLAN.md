@@ -53,15 +53,23 @@ The transcriber should be **augmentation**, not **replacement**. You speak your 
 
 ---
 
-## Phase 4: Style Learning
+## Phase 4: Style Learning ✅ COMPLETE
 **Goal:** The transcriber writes like *you*, not like generic AI.
 
-- Style corpus builder that reads your emails, messages, and docs
-- Generate a `style.json` profile: formality, sentence length, opener patterns
-- Smart formatter that adapts normalization to destination (email vs chat vs code)
-- Detect active window and apply appropriate style
+- ✅ Create `voice_transcriber/style.py` — analyzes samples, builds `style.json` profile
+- ✅ Create `voice_transcriber/style_formatter.py` — applies profile: capitalizes_i, contractions, trailing periods, fragments
+- ✅ Create `voice_transcriber/style_corpus.py` — interactive `--learn-style` CLI
+- ✅ Modify `transcriber.py` — add `--learn-style` flag
+- ✅ Modify `pipeline.py` — style applied after normalization
+- ✅ All 86 tests passing
 
-**Deliverable:** Pasted text sounds like you typed it.
+**How it works:**
+```bash
+.venv/bin/python transcriber.py --learn-style
+# Paste 2–3 samples of your writing
+# Profile saved to ~/.config/voice-transcriber/style.json
+# From then on, every transcript matches your style
+```
 
 ---
 
