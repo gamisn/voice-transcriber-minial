@@ -41,6 +41,9 @@ class UserContext:
     # Human-readable label for the current project / focus.
     active_project: str = ""
 
+    # How many hours back to look in transcript history for recent terms.
+    recency_hours: int = 2
+
     # ISO-8601 timestamp of when this context was last updated.
     last_updated: str = ""
 
@@ -61,7 +64,13 @@ class UserContext:
 
 
 def load_user_context() -> UserContext:
-    """Load context from disk, returning an empty object on any failure."""
+    """Load context from disk, merging static JSON with live memory.
+
+    Recent terms and active domains are pulled from the transcript history
+    database (via ``memory.py``) and mixed with whatever the user wrote in
+    ``context.json``.  This means the transcriber adapts to what you were
+    actually talking about, not just what you manually configured.
+    """
     if not _CONTEXT_PATH.exists():
         return UserContext()
 
@@ -70,13 +79,33 @@ def load_user_context() -> UserContext:
     except (OSError, json.JSONDecodeError):
         return UserContext()
 
-    return UserContext(
+    ctx = UserContext(
         active_domains=_list_of_str(payload.get("active_domains", [])),
         recent_terms=_list_of_str(payload.get("recent_terms", [])),
         active_project=_str_or_blank(payload.get("active_project", "")),
+        recency_hours=int(payload.get("recency_hours", 2)),
         last_updated=_str_or_blank(payload.get("last_updated", "")),
     )
-    # end load_user_context
+
+    # Merge memory-derived terms and domains
+    try:
+        from voice_transcriber.memory import build_user_context_from_memory
+
+        mem_domains, mem_terms = build_user_context_from_memory(
+            hours=ctx.recency_hours,
+            max_terms=15,
+        )
+        # Memory domains prepend to the user-configured ones (most recent first)
+        merged_domains = list(dict.fromkeys(mem_domains + ctx.active_domains))
+        # Memory terms prepend similarly
+        merged_terms = list(dict.fromkeys(mem_terms + ctx.recent_terms))
+        ctx.active_domains = merged_domains
+        ctx.recent_terms = merged_terms
+    except Exception:
+        # If memory query fails for any reason, fall back to static JSON only
+        pass
+
+    return ctx
 
 
 def save_user_context(ctx: UserContext) -> None:

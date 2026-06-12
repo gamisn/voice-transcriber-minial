@@ -129,6 +129,15 @@ def detect_domain(
         active_domains = {d.lower() for d in context.active_domains}
         recent_terms_set = {t.lower() for t in context.recent_terms}
 
+    # Load memory-derived domain boosts (independent of UserContext)
+    memory_boosts: dict[str, float] = {}
+    try:
+        from voice_transcriber.memory import get_domain_boosts
+
+        memory_boosts = {b.domain_id: b.score for b in get_domain_boosts(hours=2)}
+    except Exception:
+        pass
+
     # Pre-build alias-to-domain index for fast lookup
     alias_to_domain: dict[str, list[str]] = {}
     for glossary in glossaries.values():
@@ -168,6 +177,11 @@ def detect_domain(
 
             # Bias: boost score for matched tokens that are recent terms
             score += sum(1 for token in all_matched if token in recent_terms_set)
+
+            # Phase 3: Memory Sync — recency bias from transcript history
+            mem_boost = memory_boosts.get(glossary.domain_id, 0.0)
+            if mem_boost > 0:
+                score += min(mem_boost * 0.15, 0.6)  # cap at 0.6 to avoid overriding keywords
 
         if score > best_score:
             best_score = score
