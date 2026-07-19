@@ -1,0 +1,16 @@
+[Unit]
+Description=Voice Transcriber Daemon
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Workspace/voice-transcriber-minial
+ExecStart=%h/Workspace/voice-transcriber-minial/.venv/bin/python -m voice_transcriber.daemon
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONNOUSERSITE=1
+Environment=PYTHONPATH=%h/Workspace/voice-transcriber-minial
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,18 @@
+[Unit]
+Description=Voice Transcriber Tray
+After=network.target voice-transcriber-daemon.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Workspace/voice-transcriber-minial
+ExecStart=%h/Workspace/voice-transcriber-minial/.venv/bin/python tray.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=DISPLAY=:0
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PYTHONNOUSERSITE=1
+Environment=GI_TYPELIB_PATH=/usr/lib/x86_64-linux-gnu/girepository-1.0
+
+[Install]
+WantedBy=default.target
