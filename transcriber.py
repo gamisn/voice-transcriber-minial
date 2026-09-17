@@ -72,6 +72,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Force a domain hint (e.g. 'technical', 'general'). Overrides config.",
     )
     p.add_argument(
+        "--no-context",
+        action="store_true",
+        help="Disable context-aware domain detection for this run.",
+    )
+    p.add_argument(
+        "--no-auto-glossary",
+        action="store_true",
+        help="Disable automatic glossary candidate generation for this run.",
+    )
+    p.add_argument(
+        "--no-style",
+        action="store_true",
+        help="Disable style matching for this run.",
+    )
+    p.add_argument(
         "--save",
         metavar="PATH",
         default=None,
@@ -149,6 +164,9 @@ def main() -> None:
             language=language,
             domain_hint=domain_hint,
             custom_terms=config.custom_terms,
+            context_enabled=config.context_enabled and not args.no_context,
+            auto_glossary=config.auto_glossary and not args.no_auto_glossary,
+            style_enabled=config.style_enabled and not args.no_style,
         ),
     )
 

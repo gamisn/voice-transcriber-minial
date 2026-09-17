@@ -229,7 +229,16 @@ class MacMenubarDaemon:
 
     # -- Lifecycle -----------------------------------------------------------
 
-    def run(self, model: str, language: str, domain_hint: str, custom_terms: list[str]) -> None:
+    def run(
+        self,
+        model: str,
+        language: str,
+        domain_hint: str,
+        custom_terms: list[str],
+        auto_glossary: bool = True,
+        context_enabled: bool = True,
+        style_enabled: bool = True,
+    ) -> None:
         """Start the menubar daemon. Blocks until the user quits."""
         from AppKit import (
             NSApplication,
@@ -254,6 +263,9 @@ class MacMenubarDaemon:
             domain_hint=domain_hint,
             custom_terms=custom_terms,
             hooks=hooks,
+            auto_glossary=auto_glossary,
+            context_enabled=context_enabled,
+            style_enabled=style_enabled,
         )
 
         self._app = NSApplication.sharedApplication()
@@ -399,6 +411,9 @@ def main() -> None:
             language=language,
             domain_hint=domain_hint,
             custom_terms=config.custom_terms,
+            auto_glossary=config.auto_glossary,
+            context_enabled=config.context_enabled,
+            style_enabled=config.style_enabled,
         )
     # end main
 

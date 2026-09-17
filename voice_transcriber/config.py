@@ -23,6 +23,9 @@ class AppConfig:
 
     # Phase 2: Dynamic Glossaries
     auto_glossary: bool = True
+
+    # Phase 4: Style Learning
+    style_enabled: bool = True
     # end AppConfig
 
 
@@ -43,6 +46,7 @@ def load_config() -> AppConfig:
         custom_terms=_normalize_terms(payload.get("custom_terms", [])),
         context_enabled=bool(payload.get("context_enabled", True)),
         auto_glossary=bool(payload.get("auto_glossary", True)),
+        style_enabled=bool(payload.get("style_enabled", True)),
     )
     # end load_config
 

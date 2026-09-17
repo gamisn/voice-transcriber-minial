@@ -388,7 +388,16 @@ class TrayDaemon:
             pass
         # end _setup_signal_handler
 
-    def run(self, model: str, language: str, domain_hint: str, custom_terms: list[str]) -> None:
+    def run(
+        self,
+        model: str,
+        language: str,
+        domain_hint: str,
+        custom_terms: list[str],
+        auto_glossary: bool = True,
+        context_enabled: bool = True,
+        style_enabled: bool = True,
+    ) -> None:
         """Start the daemon. Blocks until the user quits."""
         import gi
         gi.require_version("Gtk", "3.0")
@@ -404,6 +413,9 @@ class TrayDaemon:
             domain_hint=domain_hint,
             custom_terms=custom_terms,
             hooks=hooks,
+            auto_glossary=auto_glossary,
+            context_enabled=context_enabled,
+            style_enabled=style_enabled,
         )
 
         self._setup_signal_handler()
@@ -501,6 +513,9 @@ def main() -> None:
             language=language,
             domain_hint=domain_hint,
             custom_terms=config.custom_terms,
+            auto_glossary=config.auto_glossary,
+            context_enabled=config.context_enabled,
+            style_enabled=config.style_enabled,
         )
     # end main
 

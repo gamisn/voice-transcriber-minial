@@ -185,6 +185,9 @@ class RecordingSession:
         domain_hint: str,
         custom_terms: list[str],
         hooks: RecordingHooks,
+        auto_glossary: bool = True,
+        context_enabled: bool = True,
+        style_enabled: bool = True,
     ) -> None:
         self._sd = sd
         self._model_name = model_name
@@ -192,6 +195,9 @@ class RecordingSession:
         self._domain_hint = domain_hint
         self._custom_terms = custom_terms
         self._hooks = hooks
+        self._auto_glossary = auto_glossary
+        self._context_enabled = context_enabled
+        self._style_enabled = style_enabled
         # end __init__
 
     def run(self, stop_event: threading.Event) -> None:
@@ -223,6 +229,9 @@ class RecordingSession:
                     language=self._language,
                     domain_hint=self._domain_hint,
                     custom_terms=self._custom_terms,
+                    auto_glossary=self._auto_glossary,
+                    context_enabled=self._context_enabled,
+                    style_enabled=self._style_enabled,
                 ),
             )
 
@@ -258,12 +267,18 @@ class DaemonCore:
         domain_hint: str,
         custom_terms: list[str],
         hooks: RecordingHooks,
+        auto_glossary: bool = True,
+        context_enabled: bool = True,
+        style_enabled: bool = True,
     ) -> None:
         self._model_name = model_name
         self._language = language
         self._domain_hint = domain_hint
         self._custom_terms = custom_terms
         self._hooks = hooks
+        self._auto_glossary = auto_glossary
+        self._context_enabled = context_enabled
+        self._style_enabled = style_enabled
 
         self._state = State.IDLE
         self._state_lock = threading.Lock()
@@ -317,6 +332,9 @@ class DaemonCore:
             domain_hint=self._domain_hint,
             custom_terms=self._custom_terms,
             hooks=session_hooks,
+            auto_glossary=self._auto_glossary,
+            context_enabled=self._context_enabled,
+            style_enabled=self._style_enabled,
         )
 
         self._work_thread = threading.Thread(
@@ -340,12 +358,18 @@ class DaemonCore:
         language: str,
         domain_hint: str,
         custom_terms: list[str],
+        auto_glossary: bool = True,
+        context_enabled: bool = True,
+        style_enabled: bool = True,
     ) -> None:
         """Update the options used by the next recording. Useful for tests."""
         self._model_name = model_name
         self._language = language
         self._domain_hint = domain_hint
         self._custom_terms = custom_terms
+        self._auto_glossary = auto_glossary
+        self._context_enabled = context_enabled
+        self._style_enabled = style_enabled
         # end update_options
 
 

@@ -2,7 +2,7 @@
 
 Record your voice and transcribe it locally using [OpenAI Whisper](https://github.com/openai/whisper). No cloud APIs, no data leaves your machine.
 
-Transcriptions go through a domain-aware correction pipeline that fixes common Whisper mishearings of technical terms (Docker, Kubernetes, AWS Lambda, etc.), normalises formatting, and lands the result in your clipboard — paste-ready.
+Transcriptions go through a domain-aware correction pipeline that fixes common Whisper mishearings of technical terms (Docker, Kubernetes, AWS Lambda, etc.), normalises formatting, and lands the result in your clipboard — paste-ready. It also learns: context-aware domain detection, auto-glossaries that pick up your vocabulary (with a review flow), recency memory, and a style profile that makes output sound like you.
 
 ## Quick Start
 
@@ -125,7 +125,10 @@ Create or edit `~/.config/voice-transcriber/config.json`:
   "default_model": "small",
   "default_language": "en",
   "domain_hint": "auto",
-  "custom_terms": ["MyCompany", "SpecialTool"]
+  "custom_terms": ["MyCompany", "SpecialTool"],
+  "context_enabled": true,
+  "auto_glossary": true,
+  "style_enabled": true
 }
 ```
 
@@ -193,6 +196,9 @@ voice-transcriber --domain technical      # force technical domain correction
 voice-transcriber --save recording.wav    # save audio alongside transcription
 voice-transcriber --list-devices          # list available microphones
 voice-transcriber -d <index>              # use a specific microphone
+voice-transcriber --no-context            # skip context-aware detection for this run
+voice-transcriber --no-auto-glossary      # skip glossary candidate generation for this run
+voice-transcriber --no-style              # skip style matching for this run
 voice-transcriber > note.txt              # pipe to a file
 ```
 
@@ -208,7 +214,16 @@ The pipeline auto-detects technical dictation and corrects common Whisper mishea
 | "TypeScript" | "type script" | TypeScript |
 | "PostgreSQL" | "postgres" | PostgreSQL |
 
-Auto-detection uses keyword analysis. Force a domain with `--domain technical` or set `domain_hint` in the config file.
+Auto-detection uses keyword analysis, then biases the score with:
+
+- **Context** (`~/.config/voice-transcriber/context.json`) — your active
+  domains and recent terms give a small boost when the transcript actually
+  contains matching keywords, so "i space" can still land in C# mode.
+- **Memory** — recency-weighted analysis of your last 2 hours of transcript
+  history, so a follow-up sentence like "check the compose file" keeps the
+  domain from the sentence before it.
+
+Force a domain with `--domain technical` or set `domain_hint` in the config file.
 
 Add your own terms in `~/.config/voice-transcriber/config.json`:
 
@@ -218,6 +233,41 @@ Add your own terms in `~/.config/voice-transcriber/config.json`:
 }
 ```
 
+Custom terms are matched word-by-word even when you dictate them with pauses
+("my company a p i" → `MyCompanyAPI`). Corrections preserve the case of the
+canonical term, so acronyms and CamelCase survive the pipeline.
+
+## Auto-Learning Glossaries
+
+The transcriber keeps a SQLite history of every transcript
+(`~/.cache/voice-transcriber/history.db`) and watches for corrections whose
+raw form isn't yet in a glossary. New mishearing → canonical pairs become
+**pending candidates**. Review them with:
+
+```bash
+voice-transcriber --review
+```
+
+For each candidate you can approve it (appended to the domain's glossary
+JSON on disk), reject it, or skip. Nothing is added to a glossary without
+your explicit approval. Disable candidate generation entirely with
+`auto_glossary: false` in the config or `--no-auto-glossary` for a single run.
+
+## Style Learning
+
+The transcriber can learn how *you* write — capitalization, contractions,
+sentence fragments, trailing periods — and adapt every transcript to match:
+
+```bash
+voice-transcriber --learn-style
+```
+
+You paste 2–3 samples of your actual writing; the resulting profile is saved
+to `~/.config/voice-transcriber/style.json` (machine-specific, not in git).
+From then on every transcript passes through a style pass after normalisation.
+Disable it with `style_enabled: false` in the config or `--no-style` for a
+single run. Re-run `--learn-style` anytime to update the profile.
+
 ## Configuration
 
 Config file: `~/.config/voice-transcriber/config.json`
@@ -226,10 +276,40 @@ Config file: `~/.config/voice-transcriber/config.json`
 |---|---|---|---|
 | `default_model` | string | `"base"` | Whisper model size |
 | `default_language` | string | `"en"` | Language code |
-| `domain_hint` | string | `"auto"` | Domain for glossary correction (`auto`, `technical`, `general`) |
+| `domain_hint` | string | `"auto"` | Domain for glossary correction (`auto`, `technical`, `general`, ...) |
 | `custom_terms` | string[] | `[]` | Additional terms for glossary correction |
+| `context_enabled` | bool | `true` | Read `context.json` + recent history to bias domain detection |
+| `auto_glossary` | bool | `true` | Propose pending glossary candidates after each transcript |
+| `style_enabled` | bool | `true` | Apply the learned style profile to output |
 
-CLI flags always override config values. The config file is optional — sane defaults are used when it does not exist.
+CLI flags always override config values. The `--no-context`,
+`--no-auto-glossary`, and `--no-style` flags switch the corresponding feature
+off for a single run. The config file is optional — sane defaults are used
+when it does not exist.
+
+**Note:** the daemon reads config once at startup — restart
+`voice-transcriber-tray` (or reopen the macOS app) after editing config.json.
+
+## Data Files
+
+| File | Purpose |
+|---|---|
+| `~/.config/voice-transcriber/config.json` | Configuration (see table above) |
+| `~/.config/voice-transcriber/context.json` | Optional context hints: `active_domains`, `recent_terms`, `active_project` |
+| `~/.config/voice-transcriber/style.json` | Learned style profile (machine-specific, not in git) |
+| `~/.cache/voice-transcriber/history.db` | SQLite transcript history feeding memory + glossary learning |
+| `~/.cache/voice-transcriber/error.log` | Traceback log for recording/processing failures |
+
+`context.json` is optional; when absent, domain detection uses only the
+transcript text plus recent history. A minimal example:
+
+```json
+{
+  "active_domains": ["technical"],
+  "recent_terms": ["IServiceScopeFactory", "Docker"],
+  "active_project": "voice-transcriber"
+}
+```
 
 ## Model Sizes
 
@@ -273,19 +353,28 @@ voice_transcriber/          Shared core
                             unix socket, recording session, model preload
   recorder.py               Audio capture (sounddevice)
   transcription.py          Whisper model loading and transcription
-  pipeline.py               Post-processing: domain detection -> glossary -> normalisation
+  pipeline.py               Post-processing: domain detection -> glossary -> normalisation -> style
   domain.py                 Domain detection and glossary correction
-  glossaries/*.json         Data-driven domain glossaries (technical, ...)
+  glossaries/*.json         Data-driven domain glossaries (technical, csharp, savadeck, hermes)
   formatter.py              Text normalisation
+  context.py                Context bridge: reads ~/.config/voice-transcriber/context.json
+  memory.py                 Recency-weighted term/domain memory from history
+  history.py                SQLite transcript history + pending glossary candidates
+  observer.py               Pipeline hook: records history, proposes glossary entries
+  term_classifier.py        Heuristic mishearing -> canonical alias extraction
+  reviewer.py               Interactive CLI for approving/rejecting pending terms
+  style.py                  Style profile builder (~/.config/voice-transcriber/style.json)
+  style_formatter.py        Applies the style profile to final output
+  style_corpus.py           Interactive --learn-style corpus builder
   errors.py                 Typed errors + traceback logging to ~/.cache/voice-transcriber/error.log
   config.py                 Config load/save (~/.config/voice-transcriber/config.json)
   clipboard.py              Cross-platform clipboard (Linux/macOS/Windows)
   models.py                 Data models
   rewriter.py               Style-aware AI rewriter — interface sketch only
 
-transcriber.py              CLI entry point (~160 lines)
-tray.py                     Linux tray daemon — GTK/AppIndicator (~510 lines)
-mac_menubar.py              macOS menubar daemon — PyObjC/NSStatusItem (~410 lines)
+transcriber.py              CLI entry point (~200 lines)
+tray.py                     Linux tray daemon — GTK/AppIndicator (~520 lines)
+mac_menubar.py              macOS menubar daemon — PyObjC/NSStatusItem (~420 lines)
 build_mac_app.sh            Builds Voice Transcriber.app bundle for macOS
 ```
 
@@ -330,6 +419,21 @@ sudo apt install gir1.2-ayatanaappindicator3-0.1
 pkill -f tray.py
 voice-transcriber-tray
 ```
+
+**Config changes not picked up by the daemon**
+The tray/menubar daemon reads config.json once at startup. Restart it after editing the config (right-click → Quit, then relaunch, or `pkill -f tray.py && voice-transcriber-tray`).
+
+**Wrong domain detected (or corrections not applied)**
+Check what was detected with `voice-transcriber --domain technical` to force a domain, or inspect the detection line printed after transcription. If context/memory bias is unwanted for a run, pass `--no-context`.
+
+**A mishearing keeps coming back**
+Say the term a few times, then run `voice-transcriber --review` — the accumulated candidates appear for approval. Approving adds the alias to the domain glossary permanently.
+
+**Style output unwanted**
+Either disable it permanently with `style_enabled: false` in config.json, delete `~/.config/voice-transcriber/style.json`, or pass `--no-style` for a single run.
+
+**Where is my transcript history?**
+`~/.cache/voice-transcriber/history.db` (SQLite). Delete it to reset memory and glossary learning — config and style profile are unaffected.
 
 ## License
 

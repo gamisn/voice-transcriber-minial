@@ -26,6 +26,9 @@ class ProcessingOptions:
     custom_terms: list[str] = field(default_factory=list)
     context: "UserContext | None" = None
 
+    # Phase 1: Context Bridge
+    context_enabled: bool = True
+
     # Phase 2: Dynamic Glossaries
     auto_glossary: bool = True
 

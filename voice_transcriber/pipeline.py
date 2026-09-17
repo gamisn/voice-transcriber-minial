@@ -24,7 +24,9 @@ def process_transcript(
     if not raw_transcript.strip():
         warnings.append("Transcription was empty.")
 
-    ctx = options.context or load_user_context()
+    ctx = options.context
+    if ctx is None and options.context_enabled:
+        ctx = load_user_context()
     domain = detect_domain(raw_transcript, domain_hint=options.domain_hint, context=ctx)
     corrected, applied_terms = apply_glossary(
         raw_transcript, domain, options.custom_terms,
